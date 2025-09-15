@@ -15,7 +15,7 @@ An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, feat
 ### Advanced Workout Generation
 - **Intelligent TSS-Targeted Training**: Generates custom workouts to hit specific Training Stress Score targets
 - **W'bal Constraint System**: Respects anaerobic work capacity for physiologically realistic intervals
-- **Multi-Phase Structure**: 
+- **Multi-Phase Structure**:
   - Fixed warmup sequence (10% of workout)
   - Dynamic training intervals with varied intensities (80% of workout)
   - Structured cooldown progression (10% of workout)
@@ -59,7 +59,7 @@ const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
 ### Target TSS
 - **Workout intensity**: Higher TSS = more time at higher intensities
 - **Duration relationship**: TSS/hour typically ranges from 60 (easy) to 150+ (very hard)
-- **Examples**: 
+- **Examples**:
   - TSS 200/4h = moderate endurance (IF ~0.63)
   - TSS 350/4h = hard training (IF ~0.76)
   - TSS 500/4h = very hard/racing (IF ~0.91)
@@ -80,7 +80,7 @@ const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
    ```
    File → Preferences → Additional Board Manager URLs:
    https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-   
+
    Tools → Board → Boards Manager → Search "ESP32" → Install
    ```
 
@@ -104,7 +104,7 @@ const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
 1. Open Zwift and navigate to pairing screen
 2. Look for "Kickr Core 5638" in all three categories:
    - Power Source
-   - Cadence Source  
+   - Cadence Source
    - Heart Rate Monitor
 3. Pair all three services and start riding
 
@@ -112,6 +112,15 @@ const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
 - **Serial Output**: Real-time power, HR, cadence, and segment information
 - **Workout Visualization**: ASCII graph updates every minute showing full workout profile
 - **Progress Tracking**: Current position, remaining time, and zone information
+
+### Workout Lifecycle
+- **Automatic Start**: Workout begins immediately upon ESP32 boot/reset
+- **Completion Behavior**: After workout ends:
+  - Power and cadence drop to 0 (simulates stopping pedaling)
+  - Heart rate gradually decreases to 90 BPM over 5 minutes (realistic recovery)
+  - System maintains final state indefinitely
+- **New Workout**: To start fresh workout, physically reset ESP32 (reset button or power cycle)
+- **No Remote Restart**: No built-in mechanism to restart workout without hardware reset
 
 ## Workout Structure
 
@@ -145,7 +154,7 @@ const float CUSTOM_TARGET_TSS = 180.0;
 // Results in mostly Zone 2-3 riding with occasional tempo efforts
 ```
 
-### VO2 Max Session (TSS 120, 1.5 hours) 
+### VO2 Max Session (TSS 120, 1.5 hours)
 ```cpp
 const uint16_t CUSTOM_DURATION_MINUTES = 90;
 const float CUSTOM_TARGET_TSS = 120.0;
@@ -204,7 +213,7 @@ const float CUSTOM_TARGET_TSS = 280.0;
 - Basic BLE services (Power, Cadence, Heart Rate)
 - Fixed cycling ranges:
   - Power: 200-220W
-  - Cadence: 90-98 RPM  
+  - Cadence: 90-98 RPM
   - Heart Rate: 135-155 BPM
 - Simple value oscillation
 - Basic Zwift compatibility
