@@ -20,25 +20,11 @@ const uint8_t HR_BASE = 135;                  // Base heart rate at 50% FTP
 const uint8_t HR_MAX = 170;                   // Max heart rate at 127% FTP
 
 // Custom workout generation parameters
-const uint16_t CUSTOM_DURATION_MINUTES = 240; // Training duration for 10-90% range in minutes
+const uint16_t CUSTOM_DURATION_MINUTES = 240; // Training duration for main interval block in minutes
 const float CUSTOM_TARGET_TSS = 350.0;        // Target TSS for the custom interval
-const float START_BOUNDARY_POWER = 1.20;      // Power at start of custom range (from 10% mark)
-const float END_BOUNDARY_POWER = 0.76;        // Power at end of custom range (to 90% mark)
 
-// W'bal parameters
-const float CRITICAL_POWER_RATIO = 1.06;      // CP as ratio of FTP (CP typically 6% higher than FTP)
-const uint32_t W_PRIME_JOULES = 30000;        // W' anaerobic work capacity in joules (30kJ)
-const float MIN_POWER_RATIO = 0.3;            // Minimum power as ratio of FTP (no zero power zones)
-
-// Recovery constants for W'bal model (from Skiba et al.)
-const float TAU_CONSTANT_A = 546.0;           // Time constant coefficient A
-const float TAU_CONSTANT_B = 316.0;           // Time constant coefficient B
-const float TAU_CONSTANT_C = 0.01;            // Time constant coefficient C
-
-// Fixed segments for first and last 10%
-const uint8_t FIXED_START_SEGMENTS = 11;      // Number of fixed segments at start
-const uint8_t FIXED_END_SEGMENTS = 7;         // Number of fixed segments at end
-const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Maximum custom segments to generate
+// Workout structure parameters
+const uint8_t MAX_CUSTOM_SEGMENTS = 70;       // Exact number of custom segments to generate
 // ============================ END CONFIGURABLE PARAMETERS ============================
 
 // Workout segment structure
@@ -46,32 +32,6 @@ struct WorkoutSegment {
     uint16_t duration;    // Duration in seconds
     float powerLow;       // Starting power multiplier
     float powerHigh;      // Ending power multiplier
-};
-
-// Fixed start segments (first 10% of workout)
-WorkoutSegment fixedStartSegments[] = {
-    {110, 0.5, 0.56},
-    {231, 0.56, 0.0},
-    {65, 0.0, 0.51},
-    {285, 0.51, 0.0},
-    {74, 0.0, 1.27},
-    {120, 1.27, 0.67},
-    {89, 0.67, 0.46},
-    {78, 0.46, 1.1},
-    {89, 1.1, 1.14},
-    {62, 1.14, 1.27},
-    {188, 1.27, START_BOUNDARY_POWER}
-};
-
-// Fixed end segments (last 10% of workout)
-WorkoutSegment fixedEndSegments[] = {
-    {491, END_BOUNDARY_POWER, 0.72},
-    {179, 0.72, 0.81},
-    {415, 0.81, 0.93},
-    {406, 0.93, 0.86},
-    {178, 0.86, 0.95},
-    {107, 0.95, 0.95},
-    {71, 0.95, 0.0}
 };
 
 // Dynamic workout array
@@ -137,40 +97,6 @@ float calculateSegmentTSS(float powerStart, float powerEnd, uint16_t duration) {
     return (duration * IF * IF * 100.0) / 3600.0;
 }
 
-// Calculate W'bal depletion/recovery for a power level over duration
-float calculateWbalChange(float powerRatio, uint16_t duration) {
-    float criticalPowerRatio = CRITICAL_POWER_RATIO;
-
-    if (powerRatio <= criticalPowerRatio) {
-        // Recovery: exponential recovery below CP
-        float dcp = criticalPowerRatio - powerRatio;
-        float tau = TAU_CONSTANT_A * exp(-TAU_CONSTANT_B * dcp) + TAU_CONSTANT_C;
-        // Simplified recovery: approximate exponential recovery
-        return W_PRIME_JOULES * (1.0 - exp(-duration / tau));
-    } else {
-        // Depletion: linear depletion above CP
-        float excessPower = (powerRatio - criticalPowerRatio) * FTP; // watts above CP
-        return -(excessPower * duration); // negative = depletion in joules
-    }
-}
-
-// Check if segment is physiologically feasible given current W'bal
-bool isSegmentFeasible(float powerStart, float powerEnd, uint16_t duration, float currentWbal) {
-    // Check maximum depletion during segment
-    float maxPower = (powerStart > powerEnd) ? powerStart : powerEnd;
-    if (maxPower <= CRITICAL_POWER_RATIO) {
-        return true; // Recovery or maintenance - always feasible
-    }
-
-    // Estimate worst-case depletion (assuming max power for full duration)
-    float worstCaseDepletion = -calculateWbalChange(maxPower, duration);
-
-    // Need some safety margin (20% of W')
-    float safetyMargin = W_PRIME_JOULES * 0.2;
-
-    return (currentWbal - worstCaseDepletion) > safetyMargin;
-}
-
 // Generate random float between min and max
 float randomFloat(float minVal, float maxVal) {
     return minVal + (float)random(0, 10000) / 10000.0 * (maxVal - minVal);
@@ -186,9 +112,6 @@ void printConfiguration() {
     Serial.println("CONFIGURATION:");
     Serial.println("----------------------------------------");
     Serial.print("FTP: "); Serial.print(FTP); Serial.println(" W");
-    Serial.print("Critical Power: "); Serial.print((uint16_t)(CRITICAL_POWER_RATIO * FTP)); Serial.println(" W");
-    Serial.print("W' Capacity: "); Serial.print(W_PRIME_JOULES / 1000.0); Serial.println(" kJ");
-    Serial.print("Min Power: "); Serial.print((uint16_t)(MIN_POWER_RATIO * FTP)); Serial.println(" W");
     Serial.print("Heart Rate Range: "); Serial.print(HR_BASE); Serial.print("-"); Serial.print(HR_MAX); Serial.println(" BPM");
     Serial.println();
     Serial.print("Target Duration: "); Serial.print(CUSTOM_DURATION_MINUTES); Serial.println(" min");
@@ -229,12 +152,12 @@ void printWorkoutVisualization() {
         uint32_t segmentDuration = workout[i].duration / 60; // minutes
 
         char segmentType[15];
-        if (i < FIXED_START_SEGMENTS) {
+        if (i == 0) {
             strcpy(segmentType, "WARMUP");
-        } else if (i >= FIXED_START_SEGMENTS && i < FIXED_START_SEGMENTS + (totalWorkoutSegments - FIXED_START_SEGMENTS - FIXED_END_SEGMENTS)) {
-            strcpy(segmentType, "W'BAL-CUSTOM");
-        } else {
+        } else if (i == totalWorkoutSegments - 1) {
             strcpy(segmentType, "COOLDOWN");
+        } else {
+            strcpy(segmentType, "INTERVAL");
         }
 
         Serial.print(i + 1 < 100 ? (i + 1 < 10 ? "  " : " ") : "");
@@ -306,13 +229,12 @@ void printWorkoutStatus() {
                            (workout[seg].powerHigh - workout[seg].powerLow) * segProgress;
 
             // Set segment type
-            if (seg < FIXED_START_SEGMENTS) {
+            if (seg == 0) {
                 vizType[pos] = 'W'; // Warmup
-            } else if (seg >= FIXED_START_SEGMENTS &&
-                      seg < FIXED_START_SEGMENTS + (totalWorkoutSegments - FIXED_START_SEGMENTS - FIXED_END_SEGMENTS)) {
-                vizType[pos] = 'T'; // Training (W'bal constrained)
-            } else {
+            } else if (seg == totalWorkoutSegments - 1) {
                 vizType[pos] = 'C'; // Cooldown
+            } else {
+                vizType[pos] = 'I'; // Interval
             }
         }
 
@@ -421,8 +343,9 @@ void printWorkoutStatus() {
     }
     Serial.println();
 
-    Serial.println("      W=Warmup, T=Training, C=Cooldown");
+    Serial.println("      W=Warmup, I=Interval, C=Cooldown");
     Serial.println("      Zones: 1=Recovery, 2=Endurance, 3=Tempo, 4=LT, 5=Threshold, 6=VO2Max");
+    Serial.println("      Power: #=VeryHigh(140%+), H=High(120%+), M=ModHigh(90%+), L=Moderate(60%+), .=Low");
 
     // Enhanced current status with more details
     Serial.print("Progress: ");
@@ -468,32 +391,23 @@ void printWorkoutStatus() {
     Serial.println();
 }
 
-// Generate physiologically feasible custom workout with W'bal constraints
+// Generate simplified custom workout
 void generateCustomWorkout() {
-    Serial.println("Generating W'bal-constrained custom workout...");
+    Serial.println("Generating simplified custom workout...");
     Serial.print("Target duration: ");
     Serial.print(CUSTOM_DURATION_MINUTES);
     Serial.println(" minutes");
     Serial.print("Target TSS: ");
     Serial.println(CUSTOM_TARGET_TSS);
-    Serial.print("W' capacity: ");
-    Serial.print(W_PRIME_JOULES / 1000.0);
-    Serial.println(" kJ");
-    Serial.print("Critical Power: ");
-    Serial.print(CRITICAL_POWER_RATIO * FTP);
-    Serial.println(" W");
-    Serial.print("Min Power: ");
-    Serial.print(MIN_POWER_RATIO * FTP);
-    Serial.println(" W");
 
     // Set random seed based on current time
     randomSeed(millis());
 
-    // Calculate target parameters
-    uint32_t targetDurationSeconds = CUSTOM_DURATION_MINUTES * 60;
+    // Calculate target parameters for interval section only
+    uint32_t intervalDurationSeconds = CUSTOM_DURATION_MINUTES * 60;
 
-    // Calculate average IF needed to achieve target TSS
-    float targetAverageIF = sqrt(CUSTOM_TARGET_TSS * 3600.0 / (targetDurationSeconds * 100.0));
+    // Calculate average IF needed to achieve target TSS for interval section
+    float targetAverageIF = sqrt(CUSTOM_TARGET_TSS * 3600.0 / (intervalDurationSeconds * 100.0));
 
     Serial.print("Target average IF: ");
     Serial.print(targetAverageIF, 3);
@@ -501,14 +415,14 @@ void generateCustomWorkout() {
     Serial.print(targetAverageIF * 100, 1);
     Serial.println("% FTP)");
 
-    // Generate random number of segments (15-30)
-    uint8_t numCustomSegments = randomInt(15, MAX_CUSTOM_SEGMENTS);
-    Serial.print("Generating ");
-    Serial.print(numCustomSegments);
-    Serial.println(" W'bal-constrained segments");
+    // Use exact number of interval segments
+    uint8_t numIntervalSegments = MAX_CUSTOM_SEGMENTS;
+    Serial.print("Generating exactly ");
+    Serial.print(numIntervalSegments);
+    Serial.println(" interval segments");
 
-    // Calculate total segments needed
-    totalWorkoutSegments = FIXED_START_SEGMENTS + numCustomSegments + FIXED_END_SEGMENTS;
+    // Total segments: 1 warmup + intervals + 1 cooldown
+    totalWorkoutSegments = 1 + numIntervalSegments + 1;
 
     // Allocate memory for complete workout
     if (workout != nullptr) {
@@ -516,146 +430,133 @@ void generateCustomWorkout() {
     }
     workout = (WorkoutSegment*)malloc(totalWorkoutSegments * sizeof(WorkoutSegment));
 
-    // Copy fixed start segments
-    for (uint8_t i = 0; i < FIXED_START_SEGMENTS; i++) {
-        workout[i] = fixedStartSegments[i];
-    }
+    // Create warmup segment: 30% to 100% FTP over 10 minutes
+    workout[0].duration = 600; // 10 minutes
+    workout[0].powerLow = 0.30;
+    workout[0].powerHigh = 1.00;
 
-    // Copy fixed end segments
-    for (uint8_t i = 0; i < FIXED_END_SEGMENTS; i++) {
-        workout[FIXED_START_SEGMENTS + numCustomSegments + i] = fixedEndSegments[i];
-    }
+    // Create cooldown segment: 60% to 30% FTP over 10 minutes
+    workout[totalWorkoutSegments - 1].duration = 600; // 10 minutes
+    workout[totalWorkoutSegments - 1].powerLow = 0.60;
+    workout[totalWorkoutSegments - 1].powerHigh = 0.30;
 
-    // Generate random segment durations that sum to target duration
-    uint16_t* segmentDurations = (uint16_t*)malloc(numCustomSegments * sizeof(uint16_t));
-    uint32_t remainingDuration = targetDurationSeconds;
+    // Generate equal segment durations for intervals
+    uint16_t segmentDuration = intervalDurationSeconds / numIntervalSegments;
 
-    for (uint8_t i = 0; i < numCustomSegments - 1; i++) {
-        // Each segment: 2-30 minutes (shorter for W'bal management)
-        uint16_t minDuration = 120;  // 2 minutes
-        uint32_t remainingForOthers = (numCustomSegments - i - 1) * minDuration;
-        uint32_t availableDuration = remainingDuration - remainingForOthers;
-        uint16_t maxDuration = (availableDuration > 1800) ? 1800 : (uint16_t)availableDuration; // 30 minutes max
-        segmentDurations[i] = randomInt(minDuration, maxDuration);
-        remainingDuration -= segmentDurations[i];
-    }
-    // Last segment gets remaining duration
-    segmentDurations[numCustomSegments - 1] = (uint16_t)remainingDuration;
+    // Generate power levels for intervals with smooth connections
+    float* segmentPowers = (float*)malloc((numIntervalSegments + 1) * sizeof(float));
+    segmentPowers[0] = 1.00; // Start from 100% FTP (end of warmup)
 
-    // Generate W'bal-constrained power levels
-    float* segmentPowers = (float*)malloc((numCustomSegments + 1) * sizeof(float));
-    segmentPowers[0] = START_BOUNDARY_POWER; // First power level (boundary)
+    // Generate intermediate power levels with strict physiological zone distribution
+    for (uint8_t i = 1; i < numIntervalSegments; i++) {
+        float targetPower;
 
-    // Simulate W'bal through segments to ensure feasibility
-    float currentWbal = W_PRIME_JOULES; // Start with full W'
-    uint8_t attempts = 0;
-    const uint8_t maxAttempts = 50;
+        // Check previous segments for strict intensity control
+        bool forceRecovery = false;
+        bool forceModerate = false;
 
-    do {
-        attempts++;
-        currentWbal = W_PRIME_JOULES; // Reset W'bal for each attempt
-        bool allSegmentsFeasible = true;
+        // Look back at previous segments for physiological constraints
+        if (i >= 1) {
+            // Check last segment
+            float lastPower = segmentPowers[i-1];
 
-        // Generate intermediate power levels with W'bal constraints
-        for (uint8_t i = 1; i < numCustomSegments; i++) {
-            float targetPower;
-            uint8_t powerAttempts = 0;
-
-            do {
-                powerAttempts++;
-                // Vary around target average IF, but respect physiological limits
-                float lowerBound = targetAverageIF * 0.6f;
-                float upperBound = targetAverageIF * 1.4f;
-
-                // Ensure minimum power constraint
-                if (lowerBound < MIN_POWER_RATIO) lowerBound = MIN_POWER_RATIO;
-
-                // Limit maximum power based on segment duration to prevent W'bal depletion
-                uint16_t segmentDuration = segmentDurations[i - 1]; // Previous segment duration
-                if (segmentDuration > 600) { // > 10 minutes
-                    if (upperBound > CRITICAL_POWER_RATIO * 1.1f) upperBound = CRITICAL_POWER_RATIO * 1.1f;
-                } else if (segmentDuration > 300) { // > 5 minutes
-                    if (upperBound > CRITICAL_POWER_RATIO * 1.2f) upperBound = CRITICAL_POWER_RATIO * 1.2f;
-                }
-
-                targetPower = randomFloat(lowerBound, upperBound);
-
-            } while (!isSegmentFeasible(segmentPowers[i-1], targetPower, segmentDurations[i-1], currentWbal) &&
-                     powerAttempts < 20);
-
-            if (powerAttempts >= 20) {
-                allSegmentsFeasible = false;
-                break;
+            // Force recovery after ANY very high intensity (>140% FTP)
+            if (lastPower >= 1.40f) {
+                forceRecovery = true;
             }
-
-            segmentPowers[i] = targetPower;
-
-            // Update W'bal simulation
-            float avgPower = (segmentPowers[i-1] + segmentPowers[i]) / 2.0f;
-            float wbalChange = calculateWbalChange(avgPower, segmentDurations[i-1]);
-            currentWbal += wbalChange;
-
-            // Clamp W'bal to valid range
-            if (currentWbal > W_PRIME_JOULES) currentWbal = W_PRIME_JOULES;
-            if (currentWbal < 0) currentWbal = 0;
+            // Force recovery after high intensity (>120% FTP)
+            else if (lastPower >= 1.20f) {
+                forceRecovery = true;
+            }
+            // Check for too many consecutive low intensity intervals
+            else if (i >= 3) {
+                uint8_t lowIntensityCount = 0;
+                for (uint8_t j = i-3; j < i; j++) {
+                    if (segmentPowers[j] <= 0.75f) { // Zone 1-3
+                        lowIntensityCount++;
+                    }
+                }
+                // Force higher intensity after 3+ consecutive easy intervals
+                if (lowIntensityCount >= 3) {
+                    forceModerate = true;
+                }
+            }
         }
 
-        if (allSegmentsFeasible) break;
+        if (forceRecovery) {
+            // Force recovery/endurance zone (Zone 1-2: 40-75% FTP)
+            targetPower = randomFloat(0.40f, 0.75f);
+        } else if (forceModerate) {
+            // Force moderate to threshold zone (Zone 3-5: 75-110% FTP)
+            targetPower = randomFloat(0.75f, 1.10f);
+        } else {
+            // Normal generation with realistic intensity distribution
+            // Bias toward sustainable intensities for long workouts
+            float rand = randomFloat(0.0f, 1.0f);
 
-        Serial.print("W'bal constraint attempt ");
-        Serial.print(attempts);
-        Serial.println(" - retrying...");
+            if (rand < 0.30f) {
+                // 30% - Recovery/Endurance (Zone 1-2: 40-75% FTP)
+                targetPower = randomFloat(0.40f, 0.75f);
+            } else if (rand < 0.70f) {
+                // 40% - Tempo/Threshold (Zone 3-4: 75-105% FTP)
+                targetPower = randomFloat(0.75f, 1.05f);
+            } else if (rand < 0.90f) {
+                // 20% - Threshold/VO2 (Zone 5: 105-120% FTP)
+                targetPower = randomFloat(1.05f, 1.20f);
+            } else {
+                // 10% - High VO2/Neuromuscular (Zone 6: 120-140% FTP)
+                // Limited to realistic maximum for intervals
+                targetPower = randomFloat(1.20f, 1.40f);
+            }
+        }
 
-    } while (attempts < maxAttempts);
-
-    if (attempts >= maxAttempts) {
-        Serial.println("Warning: Could not satisfy all W'bal constraints, using best attempt");
+        segmentPowers[i] = targetPower;
     }
 
-    segmentPowers[numCustomSegments] = END_BOUNDARY_POWER; // Last power level (boundary)
+    segmentPowers[numIntervalSegments] = 0.60; // End at 60% FTP (start of cooldown)
 
-    // Create custom segments
-    for (uint8_t i = 0; i < numCustomSegments; i++) {
-        uint8_t workoutIndex = FIXED_START_SEGMENTS + i;
-        workout[workoutIndex].duration = segmentDurations[i];
+    // Create interval segments with smooth connections
+    for (uint8_t i = 0; i < numIntervalSegments; i++) {
+        uint8_t workoutIndex = 1 + i; // Skip warmup segment
+        workout[workoutIndex].duration = segmentDuration;
         workout[workoutIndex].powerLow = segmentPowers[i];
         workout[workoutIndex].powerHigh = segmentPowers[i + 1];
     }
 
-    // Calculate current TSS for generated segments
+    // Calculate current TSS for generated intervals
     float currentTSS = 0.0;
-    for (uint8_t i = FIXED_START_SEGMENTS; i < FIXED_START_SEGMENTS + numCustomSegments; i++) {
+    for (uint8_t i = 1; i < totalWorkoutSegments - 1; i++) { // Skip warmup and cooldown
         currentTSS += calculateSegmentTSS(workout[i].powerLow, workout[i].powerHigh, workout[i].duration);
     }
 
     Serial.print("Generated TSS: ");
     Serial.println(currentTSS, 2);
 
-    // Normalize power levels to achieve target TSS while maintaining W'bal constraints
+    // Normalize power levels to achieve target TSS
     if (currentTSS > 0) {
         float normalizationFactor = sqrt(CUSTOM_TARGET_TSS / currentTSS);
         Serial.print("TSS normalization factor: ");
         Serial.println(normalizationFactor, 4);
 
-        // Apply careful normalization to intermediate power levels
-        for (uint8_t i = 1; i < numCustomSegments; i++) {
+        // Apply normalization to intermediate power levels only
+        for (uint8_t i = 1; i < numIntervalSegments; i++) {
             segmentPowers[i] *= normalizationFactor;
 
-            // Ensure constraints are still met after normalization
-            if (segmentPowers[i] < MIN_POWER_RATIO) segmentPowers[i] = MIN_POWER_RATIO;
-            if (segmentPowers[i] > 1.5f) segmentPowers[i] = 1.5f;
+            // Ensure reasonable constraints after normalization
+            if (segmentPowers[i] < 0.30f) segmentPowers[i] = 0.30f;
+            if (segmentPowers[i] > 1.50f) segmentPowers[i] = 1.50f;
         }
 
         // Update workout segments with normalized power levels
-        for (uint8_t i = 0; i < numCustomSegments; i++) {
-            uint8_t workoutIndex = FIXED_START_SEGMENTS + i;
+        for (uint8_t i = 0; i < numIntervalSegments; i++) {
+            uint8_t workoutIndex = 1 + i;
             workout[workoutIndex].powerLow = segmentPowers[i];
             workout[workoutIndex].powerHigh = segmentPowers[i + 1];
         }
 
         // Verify final TSS
         float finalTSS = 0.0;
-        for (uint8_t i = FIXED_START_SEGMENTS; i < FIXED_START_SEGMENTS + numCustomSegments; i++) {
+        for (uint8_t i = 1; i < totalWorkoutSegments - 1; i++) { // Skip warmup and cooldown
             finalTSS += calculateSegmentTSS(workout[i].powerLow, workout[i].powerHigh, workout[i].duration);
         }
 
@@ -667,20 +568,15 @@ void generateCustomWorkout() {
     }
 
     // Clean up temporary arrays
-    free(segmentDurations);
     free(segmentPowers);
 
-    Serial.print("W'bal generation completed in ");
-    Serial.print(attempts);
-    Serial.println(" attempts!");
+    Serial.println("Custom workout generation completed!");
 
     // Print workout summary
     Serial.print("Total segments: ");
     Serial.println(totalWorkoutSegments);
-    Serial.print("W'bal-constrained segments: ");
-    Serial.print(FIXED_START_SEGMENTS + 1);
-    Serial.print(" to ");
-    Serial.println(FIXED_START_SEGMENTS + numCustomSegments);
+    Serial.print("Interval segments: 2 to ");
+    Serial.println(totalWorkoutSegments - 1);
 }
 
 void setup()
@@ -695,7 +591,7 @@ void setup()
     // Display current configuration
     printConfiguration();
 
-    // Generate custom workout with W'bal constraints
+    // Generate custom workout
     generateCustomWorkout();
 
     // Calculate total workout duration
@@ -855,7 +751,7 @@ void updateValues()
     }
 
     // Calculate current power based on segment
-    float powerMultiplier = MIN_POWER_RATIO; // Default to minimum power
+    float powerMultiplier = 0.30f; // Default to minimum power
 
     if (currentSegment < totalWorkoutSegments) {
         WorkoutSegment &segment = workout[currentSegment];
@@ -865,11 +761,20 @@ void updateValues()
         powerMultiplier = segment.powerLow + (segment.powerHigh - segment.powerLow) * progress;
 
         // Ensure minimum power constraint
-        if (powerMultiplier < MIN_POWER_RATIO) powerMultiplier = MIN_POWER_RATIO;
+        if (powerMultiplier < 0.30f) powerMultiplier = 0.30f;
     }
 
-    // Calculate absolute power
-    power = (uint16_t)(FTP * powerMultiplier);
+    // Calculate absolute power with realistic power fluctuation (±2%)
+    uint16_t basePower = (uint16_t)(FTP * powerMultiplier);
+
+    // Add realistic power fluctuation (±2% random variation)
+    float powerVariation = randomFloat(-0.02f, 0.02f); // ±2%
+    power = (uint16_t)(basePower * (1.0f + powerVariation));
+
+    // Ensure power doesn't go below reasonable minimum
+    if (power < (uint16_t)(FTP * 0.25f)) {
+        power = (uint16_t)(FTP * 0.25f);
+    }
 
     // Calculate heart rate based on power multiplier
     // HR = 135 + (multiplier - 0.5) * 58.4
@@ -951,13 +856,12 @@ void sendNotifications()
 
     if (workoutFinished) {
         Serial.print(" [RECOVERY]");
-    } else if (currentSegment >= FIXED_START_SEGMENTS &&
-               currentSegment < FIXED_START_SEGMENTS + (totalWorkoutSegments - FIXED_START_SEGMENTS - FIXED_END_SEGMENTS)) {
-        Serial.print(" [W'BAL]");
-    } else if (currentSegment < FIXED_START_SEGMENTS) {
+    } else if (currentSegment == 0) {
         Serial.print(" [WARMUP]");
-    } else {
+    } else if (currentSegment == totalWorkoutSegments - 1) {
         Serial.print(" [COOLDOWN]");
+    } else {
+        Serial.print(" [INTERVAL]");
     }
 
     Serial.println();

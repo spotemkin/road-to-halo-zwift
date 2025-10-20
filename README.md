@@ -1,4 +1,4 @@
-# ESP32 BLE Cycling Emulator for Zwift v0.2.32
+# ESP32 BLE Cycling Emulator for Zwift v0.2.35
 
 An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, featuring intelligent workout generation with physiological constraints and real-time visualization.
 
@@ -8,45 +8,35 @@ An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, feat
 
 ### Core Functionality
 - **Complete Smart Trainer Emulation**: Simulates "Kickr Core 5638" with all three services:
-  - Cycling Power Service (dynamic workout-based power)
+  - Cycling Power Service (dynamic workout-based power with realistic fluctuation)
   - Cycling Speed and Cadence Service (90-98 RPM with realistic behavior)
   - Heart Rate Service (physiologically accurate HR based on power output)
 
-### Advanced Workout Generation
-- **Intelligent TSS-Targeted Training**: Generates custom workouts to hit specific Training Stress Score targets
-- **W'bal Constraint System**: Respects anaerobic work capacity for physiologically realistic intervals
-- **Multi-Phase Structure**:
-  - Fixed warmup sequence (10% of workout)
-  - Dynamic training intervals with varied intensities (80% of workout)
-  - Structured cooldown progression (10% of workout)
+### Simplified Workout Generation
+- **TSS-Targeted Training**: Generates custom workouts to hit specific Training Stress Score targets
+- **Three-Phase Structure**:
+  - Warmup: 30% to 100% FTP over 10 minutes
+  - Main intervals: Configurable duration with intelligent intensity distribution
+  - Cooldown: 60% to 30% FTP over 10 minutes
+- **Smart Zone Distribution**: Prevents physiologically impossible interval sequences
+- **Realistic Power Variation**: ±2% power fluctuation simulates natural pedaling
 
 ### Real-Time Visualization
 - **ASCII Workout Profile**: 120-character wide visualization showing power zones over time
 - **Live Progress Tracking**: Current position marker with segment information
 - **Power Zone Display**: Visual representation of training zones (Recovery to VO2 Max)
-- **Detailed Segment Info**: Duration, power targets, and workout type for each interval
+- **Enhanced Legend**: Complete symbol guide for power intensities and workout phases
 
 ## Configuration Parameters
 
-### Training Parameters
+### Core Training Parameters (Simplified)
 ```cpp
 const uint16_t FTP = 250;                     // Functional Threshold Power in watts
 const uint8_t HR_BASE = 135;                  // Base heart rate at 50% FTP
 const uint8_t HR_MAX = 170;                   // Max heart rate at 127% FTP
-```
-
-### Workout Generation
-```cpp
-const uint16_t CUSTOM_DURATION_MINUTES = 240; // Total training duration (10-90% range)
+const uint16_t CUSTOM_DURATION_MINUTES = 240; // Main interval duration in minutes
 const float CUSTOM_TARGET_TSS = 350.0;        // Target Training Stress Score
-const float START_BOUNDARY_POWER = 1.20;      // Power at start of main set (120% FTP)
-const float END_BOUNDARY_POWER = 0.76;        // Power at end of main set (76% FTP)
-```
-
-### Physiological Constraints
-```cpp
-const float CRITICAL_POWER_RATIO = 1.12;      // Critical Power as ratio of FTP
-const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
+const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segments
 ```
 
 ## Parameter Effects
@@ -64,15 +54,10 @@ const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
   - TSS 350/4h = hard training (IF ~0.76)
   - TSS 500/4h = very hard/racing (IF ~0.91)
 
-### W' (Anaerobic Work Capacity)
-- **High-intensity limits**: Constrains duration and frequency of supra-threshold efforts
-- **Recovery modeling**: Determines how quickly you can repeat hard intervals
-- **Typical values**: 15-35kJ (higher = more anaerobic capacity)
-
-### Critical Power Ratio
-- **Sustainable threshold**: Power you can theoretically hold indefinitely
-- **Typically 106-115% of FTP**: Higher ratios allow more aggressive interval prescription
-- **Training focus**: Lower ratios emphasize aerobic development, higher ratios allow more VO2 work
+### Interval Segments
+- **Fixed quantity**: Exactly MAX_CUSTOM_SEGMENTS intervals generated
+- **Equal duration**: Main interval time divided evenly among segments
+- **Smooth transitions**: Each segment connects seamlessly to the next
 
 ## Installation
 
@@ -124,26 +109,44 @@ const uint32_t W_PRIME_JOULES = 25000;        // Anaerobic work capacity (25kJ)
 
 ## Workout Structure
 
-### Phase 1: Warmup (10% duration)
-- Progressive warmup with varied intensities
-- Includes short high-intensity priming efforts
+### Simplified Three-Phase Design
+
+#### Phase 1: Warmup (10 minutes)
+- Progressive warmup: 30% to 100% FTP
+- Smooth linear progression
 - Prepares body for main training block
 
-### Phase 2: Main Set (80% duration)
-- **Intensity Distribution**:
-  - 20% recovery/endurance (45-65% FTP)
+#### Phase 2: Main Intervals (Configurable duration)
+- **Exact segment count**: Always generates MAX_CUSTOM_SEGMENTS intervals
+- **Intelligent intensity distribution**:
+  - 30% recovery/endurance (40-75% FTP)
   - 40% tempo/threshold (75-105% FTP)
-  - 30% VO2/anaerobic (110-130% FTP)
-  - 10% neuromuscular (130%+ FTP)
-- **Segment Strategy**:
-  - Short segments (2-8min): High intensity focus
-  - Medium segments (8-15min): Threshold/VO2 work
-  - Long segments (15-20min): Sustainable intensities
+  - 20% threshold/VO2 (105-120% FTP)
+  - 10% high VO2 (120-140% FTP, max)
+- **Physiological constraints**:
+  - Mandatory recovery after any >120% FTP interval
+  - Prevents consecutive very high intensity efforts
+  - Forces moderate intensity after 3+ easy intervals
+- **Smooth connections**: Each segment flows seamlessly into the next
 
-### Phase 3: Cooldown (10% duration)
-- Structured progression from training intensity to recovery
-- Gradual power reduction over multiple segments
-- Ends with easy spinning
+#### Phase 3: Cooldown (10 minutes)
+- Structured progression: 60% to 30% FTP
+- Gradual power reduction
+- Ends with easy recovery spinning
+
+## Power Visualization Legend
+
+The ASCII workout visualization uses these symbols:
+- `#` = VeryHigh (140%+ FTP) - very high intensity
+- `H` = High (120%+ FTP) - high intensity
+- `M` = ModHigh (90%+ FTP) - moderate-high
+- `L` = Moderate (60%+ FTP) - moderate
+- `.` = Low (less than 60% FTP) - low/recovery
+
+Workout phases:
+- `W` = Warmup
+- `I` = Interval
+- `C` = Cooldown
 
 ## Customization Examples
 
@@ -178,35 +181,52 @@ const float CUSTOM_TARGET_TSS = 280.0;
 ### Workout Issues
 - **Unrealistic TSS**: Check if target TSS matches duration (TSS/hour should be 50-150)
 - **Too easy/hard**: Adjust FTP setting to match your actual threshold power
-- **W'bal errors**: Reduce W_PRIME_JOULES or increase CRITICAL_POWER_RATIO if issues persist
 
 ## Version History
 
-### v0.2.32 (Current)
-**Major Rewrite with Advanced Features**
+### v0.2.35 (Current)
+**Simplified and Enhanced Workout Generation**
+
+#### Major Simplifications:
+- **Removed complex W'bal calculations**: Eliminated anaerobic work capacity modeling that caused generation failures
+- **Simplified parameter set**: Reduced from 12+ parameters to 5 core settings
+- **Fixed three-phase structure**: Standardized warmup (10min) and cooldown (10min) phases
+- **Exact segment control**: MAX_CUSTOM_SEGMENTS now specifies exact number of intervals (not maximum)
 
 #### New Features:
-- **Intelligent Workout Generation**: TSS-targeted custom workouts with physiological constraints
-- **W'bal Modeling**: Anaerobic work capacity limits prevent unrealistic interval prescriptions
-- **Real-time Visualization**: 120-character ASCII workout profile with live progress tracking
-- **Multi-phase Structure**: Warmup/training/cooldown with seamless transitions
-- **Power Zone Display**: Visual representation of training intensity zones
-- **Enhanced Configurability**: Detailed parameter control for training customization
+- **Realistic power fluctuation**: Added ±2% random variation to simulate natural pedaling imperfections
+- **Enhanced visualization legend**: Complete symbol guide for power intensities and workout phases
+- **Smooth segment transitions**: Each interval connects seamlessly to the next for continuous power flow
+- **Intelligent zone distribution**: Prevents physiologically impossible sequences (e.g., 4+ consecutive >140% FTP intervals)
+
+#### Improved Physiological Modeling:
+- **Strict high-intensity limits**: Mandatory recovery after any >120% FTP effort
+- **Realistic intensity distribution**: Weighted toward sustainable power zones for long workouts
+- **Consecutive interval prevention**: No more than 2 high-intensity or 3 low-intensity intervals in sequence
+- **Power ceiling**: Maximum 140% FTP to prevent unrealistic efforts
 
 #### Technical Improvements:
-- **Realistic Power Distribution**: Strategic intensity allocation based on segment duration
-- **Physiological HR Modeling**: Heart rate response based on actual power output vs fixed ranges
-- **TSS Accuracy**: Mathematical correction ensures target TSS within ±5%
-- **Memory Management**: Dynamic allocation for variable workout lengths
-- **Improved BLE Stability**: Enhanced connection handling and data formatting
+- **Reliable generation**: Simplified algorithm eliminates workout generation failures
+- **Better TSS accuracy**: Improved normalization maintains target within ±5%
+- **Enhanced debugging**: Clearer output shows zone distribution and physiological constraints
+- **Memory optimization**: Reduced dynamic allocation complexity
 
-#### Mathematical Enhancements:
-- **Proper TSS Calculation**: IF² weighting for accurate training load measurement
-- **W'bal Recovery Modeling**: Exponential recovery below CP, linear depletion above
-- **Smart Normalization**: Post-generation TSS correction while maintaining physiological feasibility
-- **Intensity Stratification**: Duration-based power targeting for realistic interval distribution
+### v0.2.32 (Previous)
+**Complex W'bal-Constrained System**
 
-### v0.1.09 (Previous)
+#### Features:
+- Advanced W'bal anaerobic capacity modeling
+- Variable segment structure with physiological constraints
+- Complex parameter set with recovery constants
+- Multi-attempt generation algorithm
+
+#### Issues Addressed in v0.2.35:
+- Generation failures due to over-constrained W'bal system
+- Unrealistic interval sequences (4+ consecutive very high intensity)
+- Complex parameter tuning requirements
+- Inconsistent workout generation success
+
+### v0.1.09 (Original)
 **Simple BLE Emulator**
 
 #### Features:
@@ -217,13 +237,6 @@ const float CUSTOM_TARGET_TSS = 280.0;
   - Heart Rate: 135-155 BPM
 - Simple value oscillation
 - Basic Zwift compatibility
-
-#### Limitations:
-- No workout structure
-- Fixed power output regardless of training goals
-- No physiological modeling
-- Limited configurability
-- No visualization or progress tracking
 
 ## License
 
