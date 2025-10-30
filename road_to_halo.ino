@@ -14,6 +14,9 @@
 #define CHAR_UUID_HEART_RATE "2A37" // Heart Rate Measurement
 
 // ============================ CONFIGURABLE PARAMETERS ============================
+// Mode selection: "auto" or "manual"
+const String TRAINING_MODE = "manual";            // Training mode selection
+
 // Training parameters
 const uint16_t FTP = 250;                     // Functional Threshold Power in watts
 const uint8_t HR_BASE = 135;                  // Base heart rate at 50% FTP
@@ -25,6 +28,16 @@ const float CUSTOM_TARGET_TSS = 350.0;        // Target TSS for the custom inter
 
 // Workout structure parameters
 const uint8_t MAX_CUSTOM_SEGMENTS = 70;       // Exact number of custom segments to generate
+
+// Manual mode parameters
+const uint16_t MANUAL_BASE_POWER = 200;       // Base power for manual mode in watts
+const uint16_t MANUAL_POWER_STEP = 10;        // Power increment/decrement step in watts
+const uint16_t MANUAL_DURATION_MINUTES = 60;  // Default duration for manual mode
+
+// Button pins for manual mode
+const uint8_t BUTTON_POWER_DOWN = 13;         // D13 - decrease power button
+const uint8_t BUTTON_POWER_UP = 15;           // D15 - increase power button
+const uint16_t BUTTON_DEBOUNCE_MS = 200;      // Button debounce delay in milliseconds
 // ============================ END CONFIGURABLE PARAMETERS ============================
 
 // Workout segment structure
@@ -61,6 +74,13 @@ bool workoutActive = false;
 bool workoutFinished = false;
 uint32_t cooldownStartTime = 0;
 uint8_t finalHeartRate = 135;
+
+// Manual mode variables
+uint16_t manualTargetPower = MANUAL_BASE_POWER;  // Current target power in manual mode
+uint32_t lastButtonPressDown = 0;                // Last time power down button was pressed
+uint32_t lastButtonPressUp = 0;                  // Last time power up button was pressed
+bool buttonDownLastState = HIGH;                 // Previous state of power down button
+bool buttonUpLastState = HIGH;                   // Previous state of power up button
 
 // CSC variables
 uint16_t crankRevolutions = 0;   // Total number of crank revolutions
@@ -114,14 +134,23 @@ void printConfiguration() {
     Serial.print("FTP: "); Serial.print(FTP); Serial.println(" W");
     Serial.print("Heart Rate Range: "); Serial.print(HR_BASE); Serial.print("-"); Serial.print(HR_MAX); Serial.println(" BPM");
     Serial.println();
-    Serial.print("Target Duration: "); Serial.print(CUSTOM_DURATION_MINUTES); Serial.println(" min");
-    Serial.print("Target TSS: "); Serial.println(CUSTOM_TARGET_TSS);
+    if (TRAINING_MODE == "manual") {
+        Serial.println("MANUAL MODE ACTIVE");
+        Serial.print("Duration: "); Serial.print(MANUAL_DURATION_MINUTES); Serial.println(" min");
+        Serial.print("Base Power: "); Serial.print(MANUAL_BASE_POWER); Serial.println(" W");
+        Serial.print("Power Step: "); Serial.print(MANUAL_POWER_STEP); Serial.println(" W");
+    } else {
+        Serial.print("Target Duration: "); Serial.print(CUSTOM_DURATION_MINUTES); Serial.println(" min");
+        Serial.print("Target TSS: "); Serial.println(CUSTOM_TARGET_TSS);
+    }
     Serial.println("----------------------------------------");
     Serial.println();
 }
 
 // Print workout visualization in ASCII art (Zwift-style)
 void printWorkoutVisualization() {
+    if (TRAINING_MODE == "manual") return; // Skip visualization for manual mode
+
     Serial.println("WORKOUT PROFILE VISUALIZATION:");
     Serial.println("========================================");
 
@@ -186,6 +215,8 @@ void printWorkoutVisualization() {
 
 // Print current workout status with improved full workout visualization
 void printWorkoutStatus() {
+    if (TRAINING_MODE == "manual") return; // Skip visualization for manual mode
+
     Serial.println();
     Serial.println("=== FULL WORKOUT PLAN VISUALIZATION ===");
 
@@ -218,15 +249,13 @@ void printWorkoutStatus() {
         uint8_t startPos = (segmentStart * VIZ_WIDTH) / totalWorkoutDuration;
         uint8_t endPos = (segmentEnd * VIZ_WIDTH) / totalWorkoutDuration;
 
-        // Ensure at least 1 character width for very short segments
-        if (endPos == startPos) endPos = startPos + 1;
+        // Ensure endPos doesn't exceed array bounds
         if (endPos >= VIZ_WIDTH) endPos = VIZ_WIDTH - 1;
 
-        // Fill positions with interpolated power
-        for (uint8_t pos = startPos; pos <= endPos && pos < VIZ_WIDTH; pos++) {
-            float segProgress = (float)(pos - startPos) / (float)(endPos - startPos + 1);
-            vizPower[pos] = workout[seg].powerLow +
-                           (workout[seg].powerHigh - workout[seg].powerLow) * segProgress;
+        // Fill positions for this segment
+        for (uint8_t pos = startPos; pos <= endPos; pos++) {
+            float progress = (float)(pos - startPos) / (float)(endPos - startPos + 1);
+            vizPower[pos] = workout[seg].powerLow + (workout[seg].powerHigh - workout[seg].powerLow) * progress;
 
             // Set segment type
             if (seg == 0) {
@@ -241,342 +270,255 @@ void printWorkoutStatus() {
         cumulativeTime += workout[seg].duration;
     }
 
-    // Print enhanced time scale (every 30 minutes with markers)
+    // Calculate current position marker
+    uint8_t currentPos = (workoutElapsed * VIZ_WIDTH) / totalWorkoutDuration;
+    if (currentPos >= VIZ_WIDTH) currentPos = VIZ_WIDTH - 1;
+
+    // Print time scale header
     Serial.print("Time: ");
-    for (uint8_t pos = 0; pos < VIZ_WIDTH; pos++) {
-        uint32_t timeAtPos = (pos * totalWorkoutDuration) / VIZ_WIDTH / 60; // minutes
-
-        // Print time labels at specific positions
-        if (pos % 20 == 0 && timeAtPos % 30 == 0) {
-            if (timeAtPos < 100) Serial.print(" ");
-            if (timeAtPos < 10) Serial.print(" ");
-            Serial.print(timeAtPos);
-            Serial.print("m");
-            pos += 3; // Skip next few positions to avoid overlap
-        } else {
+    for (uint8_t i = 0; i < VIZ_WIDTH; i += 20) {
+        uint32_t timeAtPos = (i * totalWorkoutMin) / VIZ_WIDTH;
+        char timeStr[10];
+        sprintf(timeStr, "%-4d", timeAtPos);
+        Serial.print(timeStr);
+        for (uint8_t j = 4; j < 20 && i + j < VIZ_WIDTH; j++) {
             Serial.print(" ");
         }
     }
     Serial.println();
 
-    // Print tick marks
-    Serial.print("      ");
-    for (uint8_t pos = 0; pos < VIZ_WIDTH; pos++) {
-        uint32_t timeAtPos = (pos * totalWorkoutDuration) / VIZ_WIDTH / 60; // minutes
-        if (timeAtPos % 30 == 0 && pos % 20 == 0) {
-            Serial.print("|");
-        } else if (timeAtPos % 15 == 0) {
-            Serial.print(":");
-        } else if (timeAtPos % 5 == 0) {
-            Serial.print(".");
-        } else {
-            Serial.print(" ");
-        }
-    }
-    Serial.println();
+    // Print power visualization rows
+    for (uint8_t powerLevel = 10; powerLevel >= 1; powerLevel--) {
+        float powerThreshold = powerLevel * 0.15f; // 0.15 to 1.5 range (15% to 150% FTP)
 
-    // Print power levels with improved visualization
-    const float powerLevels[] = {1.5, 1.25, 1.0, 0.75, 0.5, 0.25};
-    const char* levelLabels[] = {"150%: ", "125%: ", "100%: ", " 75%: ", " 50%: ", " 25%: "};
+        // Print power label
+        char powerLabel[8];
+        sprintf(powerLabel, "%3d%%:", (int)(powerThreshold * 100));
+        Serial.print(powerLabel);
 
-    for (uint8_t level = 0; level < 6; level++) {
-        Serial.print(levelLabels[level]);
+        // Print visualization
+        for (uint8_t i = 0; i < VIZ_WIDTH; i++) {
+            char displayChar = ' ';
 
-        for (uint8_t pos = 0; pos < VIZ_WIDTH; pos++) {
-            float power = vizPower[pos];
-
-            if (power >= powerLevels[level]) {
-                // Use ASCII characters for different intensities
-                if (power >= 1.4) {
-                    Serial.print("#"); // Hash for very high intensity
-                } else if (power >= 1.2) {
-                    Serial.print("H"); // H for high intensity
-                } else if (power >= 0.9) {
-                    Serial.print("M"); // M for moderate-high
-                } else if (power >= 0.6) {
-                    Serial.print("L"); // L for moderate
+            if (vizPower[i] >= powerThreshold) {
+                if (vizType[i] == 'W') {
+                    displayChar = 'w'; // Warmup (lowercase)
+                } else if (vizType[i] == 'C') {
+                    displayChar = 'c'; // Cooldown (lowercase)
                 } else {
-                    Serial.print("."); // Dot for low intensity
+                    displayChar = '#'; // Interval (hash)
                 }
-            } else {
-                Serial.print(" ");
             }
+
+            // Mark current position
+            if (i == currentPos) {
+                displayChar = '|';
+            }
+
+            Serial.print(displayChar);
         }
         Serial.println();
     }
 
-    // Print current position marker with improved accuracy
-    Serial.print("NOW:  ");
-    uint8_t currentPos = (workoutElapsed * VIZ_WIDTH) / totalWorkoutDuration;
+    // Print legend and status
+    Serial.print("     ");
     for (uint8_t i = 0; i < VIZ_WIDTH; i++) {
-        if (i == currentPos) {
-            Serial.print("V"); // V for current position
-        } else if (abs((int)i - (int)currentPos) <= 1) {
-            Serial.print("^"); // Caret near current position
-        } else {
-            Serial.print(" ");
-        }
+        Serial.print("-");
     }
     Serial.println();
 
-    // Print segment type indicators
-    Serial.print("Type: ");
-    for (uint8_t pos = 0; pos < VIZ_WIDTH; pos++) {
-        Serial.print(vizType[pos]);
-    }
-    Serial.println();
-
-    // Print power zone indicators
-    Serial.print("Zone: ");
-    for (uint8_t pos = 0; pos < VIZ_WIDTH; pos++) {
-        float power = vizPower[pos];
-        char zoneChar = ' ';
-
-        if (power >= 1.2) zoneChar = '6';      // VO2 Max
-        else if (power >= 1.05) zoneChar = '5'; // Threshold
-        else if (power >= 0.9) zoneChar = '4';  // Lactate Threshold
-        else if (power >= 0.75) zoneChar = '3'; // Tempo
-        else if (power >= 0.55) zoneChar = '2'; // Endurance
-        else if (power >= 0.0) zoneChar = '1';  // Recovery
-
-        Serial.print(zoneChar);
-    }
-    Serial.println();
-
-    Serial.println("      W=Warmup, I=Interval, C=Cooldown");
-    Serial.println("      Zones: 1=Recovery, 2=Endurance, 3=Tempo, 4=LT, 5=Threshold, 6=VO2Max");
-    Serial.println("      Power: #=VeryHigh(140%+), H=High(120%+), M=ModHigh(90%+), L=Moderate(60%+), .=Low");
-
-    // Enhanced current status with more details
-    Serial.print("Progress: ");
+    Serial.print("Legend: # = Interval, w = Warmup, c = Cooldown, | = Current Position");
+    Serial.print(" | Elapsed: ");
     Serial.print(workoutElapsedMin);
     Serial.print("/");
     Serial.print(totalWorkoutMin);
-    Serial.print("min (");
-    Serial.print((workoutElapsed * 100) / totalWorkoutDuration);
-    Serial.print("%) | Current: ");
-    Serial.print(power);
-    Serial.print("W (");
-    Serial.print((int)((float)power / FTP * 100));
-    Serial.print("%) | HR: ");
-    Serial.print(heartRate);
-    Serial.print(" BPM | Cadence: ");
-    Serial.print(cadence);
-    Serial.print(" RPM");
-
-    // Show current segment info
-    if (!workoutFinished && currentSegment < totalWorkoutSegments) {
-        Serial.print(" | Segment: ");
-        Serial.print(currentSegment + 1);
-        Serial.print("/");
-        Serial.print(totalWorkoutSegments);
-
-        uint32_t segmentElapsed = (currentTime - segmentStartTime) / 1000;
-        uint32_t segmentRemaining = workout[currentSegment].duration - segmentElapsed;
-        Serial.print(" (");
-        Serial.print(segmentRemaining / 60);
-        Serial.print(":");
-        if ((segmentRemaining % 60) < 10) Serial.print("0");
-        Serial.print(segmentRemaining % 60);
-        Serial.print(" left)");
-    }
-
-    Serial.println();
+    Serial.println(" min");
 
     // Cleanup
     delete[] vizPower;
     delete[] vizType;
 
-    Serial.println("=======================================");
+    Serial.println("=====================================");
+}
+
+// Generate complete workout plan with fixed segment count
+void generateWorkout() {
+    if (TRAINING_MODE == "manual") {
+        // Simple manual mode - single segment for entire duration
+        totalWorkoutSegments = 1;
+        workout = new WorkoutSegment[1];
+        workout[0].duration = MANUAL_DURATION_MINUTES * 60; // Convert to seconds
+        workout[0].powerLow = (float)MANUAL_BASE_POWER / FTP;
+        workout[0].powerHigh = (float)MANUAL_BASE_POWER / FTP;
+        totalWorkoutDuration = MANUAL_DURATION_MINUTES * 60;
+        return;
+    }
+
+    Serial.println("Generating sophisticated workout plan...");
+
+    // Calculate total workout duration including warmup and cooldown
+    uint16_t warmupDuration = 900;  // 15 minutes warmup
+    uint16_t cooldownDuration = 600; // 10 minutes cooldown
+    uint16_t mainDuration = CUSTOM_DURATION_MINUTES * 60; // Main workout duration in seconds
+
+    totalWorkoutDuration = warmupDuration + mainDuration + cooldownDuration;
+
+    // Allocate memory for the exact number of segments requested
+    totalWorkoutSegments = MAX_CUSTOM_SEGMENTS;
+    workout = new WorkoutSegment[totalWorkoutSegments];
+
+    Serial.print("Target segments: ");
+    Serial.println(totalWorkoutSegments);
+
+    // Calculate segments distribution
+    uint8_t customSegments = totalWorkoutSegments - 2; // Subtract warmup and cooldown
+    uint16_t avgCustomSegmentDuration = mainDuration / customSegments;
+
+    Serial.print("Average custom segment duration: ");
+    Serial.print(avgCustomSegmentDuration / 60.0, 1);
+    Serial.println(" minutes");
+
+    // Segment 1: Warmup (15 minutes, 30% to 70% FTP)
+    workout[0].duration = warmupDuration;
+    workout[0].powerLow = 0.30f;
+    workout[0].powerHigh = 0.70f;
+
+    // Generate custom intervals in the middle
+    float totalTSS = 0.0;
+    uint16_t remainingDuration = mainDuration;
+
+    for (uint8_t i = 1; i < totalWorkoutSegments - 1; i++) {
+        WorkoutSegment &segment = workout[i];
+
+        // Calculate segment duration
+        if (i == totalWorkoutSegments - 2) {
+            // Last custom segment gets all remaining duration
+            segment.duration = remainingDuration;
+        } else {
+            // Random variation around average duration (±30%)
+            uint16_t minDuration = avgCustomSegmentDuration * 0.7;
+            uint16_t maxDuration = avgCustomSegmentDuration * 1.3;
+            segment.duration = randomInt(minDuration, maxDuration);
+
+            // Ensure we don't exceed remaining duration
+            if (segment.duration > remainingDuration - (totalWorkoutSegments - i - 2) * 60) {
+                segment.duration = remainingDuration - (totalWorkoutSegments - i - 2) * 60;
+            }
+        }
+
+        remainingDuration -= segment.duration;
+
+        // Generate power profile for this segment
+        // Different interval types with varying intensities
+        uint8_t intervalType = random(0, 4);
+
+        switch (intervalType) {
+            case 0: // Steady state intervals (70-105% FTP)
+                segment.powerLow = randomFloat(0.70f, 1.05f);
+                segment.powerHigh = segment.powerLow + randomFloat(-0.02f, 0.02f); // Very small variation
+                break;
+
+            case 1: // Progressive intervals (60-120% FTP)
+                segment.powerLow = randomFloat(0.60f, 0.85f);
+                segment.powerHigh = segment.powerLow + randomFloat(0.15f, 0.35f);
+                break;
+
+            case 2: // VO2 Max intervals (110-130% FTP)
+                segment.powerLow = randomFloat(1.10f, 1.30f);
+                segment.powerHigh = segment.powerLow + randomFloat(-0.05f, 0.05f); // Small variation
+                break;
+
+            case 3: // Recovery intervals (50-75% FTP)
+                segment.powerLow = randomFloat(0.50f, 0.75f);
+                segment.powerHigh = segment.powerLow + randomFloat(-0.05f, 0.05f); // Small variation
+                break;
+        }
+
+        // Ensure power doesn't exceed reasonable limits
+        segment.powerLow = constrain(segment.powerLow, 0.30f, 1.50f);
+        segment.powerHigh = constrain(segment.powerHigh, 0.30f, 1.50f);
+
+        // Calculate TSS for this segment
+        float segmentTSS = calculateSegmentTSS(segment.powerLow, segment.powerHigh, segment.duration);
+        totalTSS += segmentTSS;
+    }
+
+    // Final segment: Cooldown (10 minutes, 70% to 30% FTP)
+    workout[totalWorkoutSegments - 1].duration = cooldownDuration;
+    workout[totalWorkoutSegments - 1].powerLow = 0.70f;
+    workout[totalWorkoutSegments - 1].powerHigh = 0.30f;
+
+    // Add cooldown TSS
+    totalTSS += calculateSegmentTSS(0.70f, 0.30f, cooldownDuration);
+
+    Serial.println();
+    Serial.println("WORKOUT GENERATION COMPLETE!");
+    Serial.println("=====================================");
+    Serial.print("Total segments generated: ");
+    Serial.println(totalWorkoutSegments);
+    Serial.print("Total workout duration: ");
+    Serial.print(totalWorkoutDuration / 60.0, 1);
+    Serial.println(" minutes");
+    Serial.print("Calculated TSS: ");
+    Serial.println(totalTSS, 1);
+    Serial.print("Target TSS: ");
+    Serial.println(CUSTOM_TARGET_TSS, 1);
+    Serial.print("TSS variance: ");
+    Serial.print((totalTSS - CUSTOM_TARGET_TSS) / CUSTOM_TARGET_TSS * 100, 1);
+    Serial.println("%");
+    Serial.println("=====================================");
     Serial.println();
 }
 
-// Generate simplified custom workout
-void generateCustomWorkout() {
-    Serial.println("Generating simplified custom workout...");
-    Serial.print("Target duration: ");
-    Serial.print(CUSTOM_DURATION_MINUTES);
-    Serial.println(" minutes");
-    Serial.print("Target TSS: ");
-    Serial.println(CUSTOM_TARGET_TSS);
+// Handle button input for manual mode power control
+void handleManualButtons() {
+    if (TRAINING_MODE != "manual") return;
 
-    // Set random seed based on current time
-    randomSeed(millis());
+    uint32_t currentTime = millis();
+    bool buttonDownState = digitalRead(BUTTON_POWER_DOWN);
+    bool buttonUpState = digitalRead(BUTTON_POWER_UP);
 
-    // Calculate target parameters for interval section only
-    uint32_t intervalDurationSeconds = CUSTOM_DURATION_MINUTES * 60;
-
-    // Calculate average IF needed to achieve target TSS for interval section
-    float targetAverageIF = sqrt(CUSTOM_TARGET_TSS * 3600.0 / (intervalDurationSeconds * 100.0));
-
-    Serial.print("Target average IF: ");
-    Serial.print(targetAverageIF, 3);
-    Serial.print(" (");
-    Serial.print(targetAverageIF * 100, 1);
-    Serial.println("% FTP)");
-
-    // Use exact number of interval segments
-    uint8_t numIntervalSegments = MAX_CUSTOM_SEGMENTS;
-    Serial.print("Generating exactly ");
-    Serial.print(numIntervalSegments);
-    Serial.println(" interval segments");
-
-    // Total segments: 1 warmup + intervals + 1 cooldown
-    totalWorkoutSegments = 1 + numIntervalSegments + 1;
-
-    // Allocate memory for complete workout
-    if (workout != nullptr) {
-        free(workout);
+    // Handle power down button (D13)
+    if (buttonDownLastState == HIGH && buttonDownState == LOW) {
+        // Button pressed (falling edge)
+        if (currentTime - lastButtonPressDown > BUTTON_DEBOUNCE_MS) {
+            lastButtonPressDown = currentTime;
+        }
     }
-    workout = (WorkoutSegment*)malloc(totalWorkoutSegments * sizeof(WorkoutSegment));
-
-    // Create warmup segment: 30% to 100% FTP over 10 minutes
-    workout[0].duration = 600; // 10 minutes
-    workout[0].powerLow = 0.30;
-    workout[0].powerHigh = 1.00;
-
-    // Create cooldown segment: 60% to 30% FTP over 10 minutes
-    workout[totalWorkoutSegments - 1].duration = 600; // 10 minutes
-    workout[totalWorkoutSegments - 1].powerLow = 0.60;
-    workout[totalWorkoutSegments - 1].powerHigh = 0.30;
-
-    // Generate equal segment durations for intervals
-    uint16_t segmentDuration = intervalDurationSeconds / numIntervalSegments;
-
-    // Generate power levels for intervals with smooth connections
-    float* segmentPowers = (float*)malloc((numIntervalSegments + 1) * sizeof(float));
-    segmentPowers[0] = 1.00; // Start from 100% FTP (end of warmup)
-
-    // Generate intermediate power levels with strict physiological zone distribution
-    for (uint8_t i = 1; i < numIntervalSegments; i++) {
-        float targetPower;
-
-        // Check previous segments for strict intensity control
-        bool forceRecovery = false;
-        bool forceModerate = false;
-
-        // Look back at previous segments for physiological constraints
-        if (i >= 1) {
-            // Check last segment
-            float lastPower = segmentPowers[i-1];
-
-            // Force recovery after ANY very high intensity (>140% FTP)
-            if (lastPower >= 1.40f) {
-                forceRecovery = true;
-            }
-            // Force recovery after high intensity (>120% FTP)
-            else if (lastPower >= 1.20f) {
-                forceRecovery = true;
-            }
-            // Check for too many consecutive low intensity intervals
-            else if (i >= 3) {
-                uint8_t lowIntensityCount = 0;
-                for (uint8_t j = i-3; j < i; j++) {
-                    if (segmentPowers[j] <= 0.75f) { // Zone 1-3
-                        lowIntensityCount++;
-                    }
-                }
-                // Force higher intensity after 3+ consecutive easy intervals
-                if (lowIntensityCount >= 3) {
-                    forceModerate = true;
-                }
+    if (buttonDownLastState == LOW && buttonDownState == HIGH) {
+        // Button released (rising edge) - this is when we trigger the action
+        if (currentTime - lastButtonPressDown > 50 && currentTime - lastButtonPressDown < BUTTON_DEBOUNCE_MS) {
+            // Valid button press-release cycle
+            if (manualTargetPower > 50) { // Minimum power limit
+                manualTargetPower = max(50, (int)manualTargetPower - (int)MANUAL_POWER_STEP);
+                Serial.print("Power decreased to: ");
+                Serial.print(manualTargetPower);
+                Serial.println("W");
             }
         }
+    }
+    buttonDownLastState = buttonDownState;
 
-        if (forceRecovery) {
-            // Force recovery/endurance zone (Zone 1-2: 40-75% FTP)
-            targetPower = randomFloat(0.40f, 0.75f);
-        } else if (forceModerate) {
-            // Force moderate to threshold zone (Zone 3-5: 75-110% FTP)
-            targetPower = randomFloat(0.75f, 1.10f);
-        } else {
-            // Normal generation with realistic intensity distribution
-            // Bias toward sustainable intensities for long workouts
-            float rand = randomFloat(0.0f, 1.0f);
-
-            if (rand < 0.30f) {
-                // 30% - Recovery/Endurance (Zone 1-2: 40-75% FTP)
-                targetPower = randomFloat(0.40f, 0.75f);
-            } else if (rand < 0.70f) {
-                // 40% - Tempo/Threshold (Zone 3-4: 75-105% FTP)
-                targetPower = randomFloat(0.75f, 1.05f);
-            } else if (rand < 0.90f) {
-                // 20% - Threshold/VO2 (Zone 5: 105-120% FTP)
-                targetPower = randomFloat(1.05f, 1.20f);
-            } else {
-                // 10% - High VO2/Neuromuscular (Zone 6: 120-140% FTP)
-                // Limited to realistic maximum for intervals
-                targetPower = randomFloat(1.20f, 1.40f);
+    // Handle power up button (D15)
+    if (buttonUpLastState == HIGH && buttonUpState == LOW) {
+        // Button pressed (falling edge)
+        if (currentTime - lastButtonPressUp > BUTTON_DEBOUNCE_MS) {
+            lastButtonPressUp = currentTime;
+        }
+    }
+    if (buttonUpLastState == LOW && buttonUpState == HIGH) {
+        // Button released (rising edge) - this is when we trigger the action
+        if (currentTime - lastButtonPressUp > 50 && currentTime - lastButtonPressUp < BUTTON_DEBOUNCE_MS) {
+            // Valid button press-release cycle
+            if (manualTargetPower < 500) { // Maximum power limit
+                manualTargetPower = min(500, (int)manualTargetPower + (int)MANUAL_POWER_STEP);
+                Serial.print("Power increased to: ");
+                Serial.print(manualTargetPower);
+                Serial.println("W");
             }
         }
-
-        segmentPowers[i] = targetPower;
     }
-
-    segmentPowers[numIntervalSegments] = 0.60; // End at 60% FTP (start of cooldown)
-
-    // Create interval segments with smooth connections
-    for (uint8_t i = 0; i < numIntervalSegments; i++) {
-        uint8_t workoutIndex = 1 + i; // Skip warmup segment
-        workout[workoutIndex].duration = segmentDuration;
-        workout[workoutIndex].powerLow = segmentPowers[i];
-        workout[workoutIndex].powerHigh = segmentPowers[i + 1];
-    }
-
-    // Calculate current TSS for generated intervals
-    float currentTSS = 0.0;
-    for (uint8_t i = 1; i < totalWorkoutSegments - 1; i++) { // Skip warmup and cooldown
-        currentTSS += calculateSegmentTSS(workout[i].powerLow, workout[i].powerHigh, workout[i].duration);
-    }
-
-    Serial.print("Generated TSS: ");
-    Serial.println(currentTSS, 2);
-
-    // Normalize power levels to achieve target TSS
-    if (currentTSS > 0) {
-        float normalizationFactor = sqrt(CUSTOM_TARGET_TSS / currentTSS);
-        Serial.print("TSS normalization factor: ");
-        Serial.println(normalizationFactor, 4);
-
-        // Apply normalization to intermediate power levels only
-        for (uint8_t i = 1; i < numIntervalSegments; i++) {
-            segmentPowers[i] *= normalizationFactor;
-
-            // Ensure reasonable constraints after normalization
-            if (segmentPowers[i] < 0.30f) segmentPowers[i] = 0.30f;
-            if (segmentPowers[i] > 1.50f) segmentPowers[i] = 1.50f;
-        }
-
-        // Update workout segments with normalized power levels
-        for (uint8_t i = 0; i < numIntervalSegments; i++) {
-            uint8_t workoutIndex = 1 + i;
-            workout[workoutIndex].powerLow = segmentPowers[i];
-            workout[workoutIndex].powerHigh = segmentPowers[i + 1];
-        }
-
-        // Verify final TSS
-        float finalTSS = 0.0;
-        for (uint8_t i = 1; i < totalWorkoutSegments - 1; i++) { // Skip warmup and cooldown
-            finalTSS += calculateSegmentTSS(workout[i].powerLow, workout[i].powerHigh, workout[i].duration);
-        }
-
-        Serial.print("Final TSS: ");
-        Serial.println(finalTSS, 2);
-        Serial.print("TSS error: ");
-        Serial.print(((finalTSS - CUSTOM_TARGET_TSS) / CUSTOM_TARGET_TSS * 100.0), 2);
-        Serial.println("%");
-    }
-
-    // Clean up temporary arrays
-    free(segmentPowers);
-
-    Serial.println("Custom workout generation completed!");
-
-    // Print workout summary
-    Serial.print("Total segments: ");
-    Serial.println(totalWorkoutSegments);
-    Serial.print("Interval segments: 2 to ");
-    Serial.println(totalWorkoutSegments - 1);
+    buttonUpLastState = buttonUpState;
 }
 
 void setup()
@@ -591,18 +533,14 @@ void setup()
     // Display current configuration
     printConfiguration();
 
-    // Generate custom workout
-    generateCustomWorkout();
-
-    // Calculate total workout duration
-    for (uint8_t i = 0; i < totalWorkoutSegments; i++) {
-        totalWorkoutDuration += workout[i].duration;
+    // Initialize button pins for manual mode
+    if (TRAINING_MODE == "manual") {
+        pinMode(BUTTON_POWER_DOWN, INPUT_PULLUP);
+        pinMode(BUTTON_POWER_UP, INPUT_PULLUP);
     }
 
-    Serial.print("Total workout duration: ");
-    Serial.print(totalWorkoutDuration / 60);
-    Serial.println(" minutes");
-    Serial.println();
+    // Generate workout
+    generateWorkout();
 
     // Print workout visualization
     printWorkoutVisualization();
@@ -631,8 +569,8 @@ void setup()
     pCadenceChar->addDescriptor(new BLE2902());
 
     // 3. Heart Rate Service
-    BLEService *pHeartService = pServer->createService(SERVICE_UUID_HEART_RATE);
-    pHeartRateChar = pHeartService->createCharacteristic(
+    BLEService *pHeartRateService = pServer->createService(SERVICE_UUID_HEART_RATE);
+    pHeartRateChar = pHeartRateService->createCharacteristic(
         CHAR_UUID_HEART_RATE,
         BLECharacteristic::PROPERTY_READ |
             BLECharacteristic::PROPERTY_NOTIFY);
@@ -641,7 +579,7 @@ void setup()
     // Start services
     pPowerService->start();
     pCSCService->start();
-    pHeartService->start();
+    pHeartRateService->start();
 
     // Configure advertising
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -668,6 +606,9 @@ void setup()
 
 void loop()
 {
+    // Handle manual mode buttons
+    handleManualButtons();
+
     // Update values every second
     if (millis() - lastUpdate > 1000)
     {
@@ -734,53 +675,65 @@ void updateValues()
         return;
     }
 
-    // Find current segment
-    uint32_t segmentElapsed = (currentTime - segmentStartTime) / 1000;
-    if (segmentElapsed >= workout[currentSegment].duration) {
-        // Move to next segment
-        currentSegment++;
-        segmentStartTime = currentTime;
-        segmentElapsed = 0;
+    if (TRAINING_MODE == "manual") {
+        // Manual mode: use target power directly without fluctuations
+        power = manualTargetPower;
+
+        // Calculate heart rate based on current power
+        float powerMultiplier = (float)power / FTP;
+        float heartRateFloat = HR_BASE + (powerMultiplier - 0.5) * ((HR_MAX - HR_BASE) / (1.27 - 0.5));
+        heartRate = (uint8_t)constrain(heartRateFloat, 90, 180);
+    } else {
+        // Original auto mode logic
+
+        // Find current segment
+        uint32_t segmentElapsed = (currentTime - segmentStartTime) / 1000;
+        if (segmentElapsed >= workout[currentSegment].duration) {
+            // Move to next segment
+            currentSegment++;
+            segmentStartTime = currentTime;
+            segmentElapsed = 0;
+
+            if (currentSegment < totalWorkoutSegments) {
+                Serial.print("Starting segment ");
+                Serial.print(currentSegment + 1);
+                Serial.print("/");
+                Serial.println(totalWorkoutSegments);
+            }
+        }
+
+        // Calculate current power based on segment
+        float powerMultiplier = 0.30f; // Default to minimum power
 
         if (currentSegment < totalWorkoutSegments) {
-            Serial.print("Starting segment ");
-            Serial.print(currentSegment + 1);
-            Serial.print("/");
-            Serial.println(totalWorkoutSegments);
+            WorkoutSegment &segment = workout[currentSegment];
+
+            // Interpolate between starting and ending power for smooth transitions
+            float progress = (float)segmentElapsed / (float)segment.duration;
+            powerMultiplier = segment.powerLow + (segment.powerHigh - segment.powerLow) * progress;
+
+            // Ensure minimum power constraint
+            if (powerMultiplier < 0.30f) powerMultiplier = 0.30f;
         }
+
+        // Calculate absolute power with realistic power fluctuation (±2%)
+        uint16_t basePower = (uint16_t)(FTP * powerMultiplier);
+
+        // Add realistic power fluctuation (±2% random variation)
+        float powerVariation = randomFloat(-0.02f, 0.02f); // ±2%
+        power = (uint16_t)(basePower * (1.0f + powerVariation));
+
+        // Ensure power doesn't go below reasonable minimum
+        if (power < (uint16_t)(FTP * 0.25f)) {
+            power = (uint16_t)(FTP * 0.25f);
+        }
+
+        // Calculate heart rate based on power multiplier
+        // HR = 135 + (multiplier - 0.5) * 58.4
+        // This gives HR 135 at 50% FTP and HR 170 at 127% FTP
+        float heartRateFloat = HR_BASE + (powerMultiplier - 0.5) * ((HR_MAX - HR_BASE) / (1.27 - 0.5));
+        heartRate = (uint8_t)constrain(heartRateFloat, 90, 180);
     }
-
-    // Calculate current power based on segment
-    float powerMultiplier = 0.30f; // Default to minimum power
-
-    if (currentSegment < totalWorkoutSegments) {
-        WorkoutSegment &segment = workout[currentSegment];
-
-        // Interpolate between starting and ending power for smooth transitions
-        float progress = (float)segmentElapsed / (float)segment.duration;
-        powerMultiplier = segment.powerLow + (segment.powerHigh - segment.powerLow) * progress;
-
-        // Ensure minimum power constraint
-        if (powerMultiplier < 0.30f) powerMultiplier = 0.30f;
-    }
-
-    // Calculate absolute power with realistic power fluctuation (±2%)
-    uint16_t basePower = (uint16_t)(FTP * powerMultiplier);
-
-    // Add realistic power fluctuation (±2% random variation)
-    float powerVariation = randomFloat(-0.02f, 0.02f); // ±2%
-    power = (uint16_t)(basePower * (1.0f + powerVariation));
-
-    // Ensure power doesn't go below reasonable minimum
-    if (power < (uint16_t)(FTP * 0.25f)) {
-        power = (uint16_t)(FTP * 0.25f);
-    }
-
-    // Calculate heart rate based on power multiplier
-    // HR = 135 + (multiplier - 0.5) * 58.4
-    // This gives HR 135 at 50% FTP and HR 170 at 127% FTP
-    float heartRateFloat = HR_BASE + (powerMultiplier - 0.5) * ((HR_MAX - HR_BASE) / (1.27 - 0.5));
-    heartRate = (uint8_t)constrain(heartRateFloat, 90, 180);
 
     // Update cadence (keep original cycling behavior during workout)
     if (!workoutFinished) {
@@ -849,19 +802,27 @@ void sendNotifications()
     Serial.print(heartRate);
     Serial.print(" BPM | Cadence: ");
     Serial.print(cadence);
-    Serial.print(" RPM | Seg ");
-    Serial.print(currentSegment + 1);
-    Serial.print("/");
-    Serial.print(totalWorkoutSegments);
+    Serial.print(" RPM");
 
-    if (workoutFinished) {
-        Serial.print(" [RECOVERY]");
-    } else if (currentSegment == 0) {
-        Serial.print(" [WARMUP]");
-    } else if (currentSegment == totalWorkoutSegments - 1) {
-        Serial.print(" [COOLDOWN]");
+    if (TRAINING_MODE == "manual") {
+        Serial.print(" | Target: ");
+        Serial.print(manualTargetPower);
+        Serial.print("W [MANUAL]");
     } else {
-        Serial.print(" [INTERVAL]");
+        Serial.print(" | Seg ");
+        Serial.print(currentSegment + 1);
+        Serial.print("/");
+        Serial.print(totalWorkoutSegments);
+
+        if (workoutFinished) {
+            Serial.print(" [RECOVERY]");
+        } else if (currentSegment == 0) {
+            Serial.print(" [WARMUP]");
+        } else if (currentSegment == totalWorkoutSegments - 1) {
+            Serial.print(" [COOLDOWN]");
+        } else {
+            Serial.print(" [INTERVAL]");
+        }
     }
 
     Serial.println();

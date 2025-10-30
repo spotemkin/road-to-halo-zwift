@@ -1,6 +1,6 @@
-# ESP32 BLE Cycling Emulator for Zwift v0.2.35
+# ESP32 BLE Cycling Emulator for Zwift v0.2.45
 
-An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, featuring intelligent workout generation with physiological constraints and real-time visualization.
+An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, featuring intelligent workout generation with physiological constraints, real-time visualization, and dual operation modes for both structured training and manual power control.
 
 ![Road to Halo Screenshot](rth_01.png)
 
@@ -12,7 +12,11 @@ An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, feat
   - Cycling Speed and Cadence Service (90-98 RPM with realistic behavior)
   - Heart Rate Service (physiologically accurate HR based on power output)
 
-### Simplified Workout Generation
+### Dual Operation Modes
+- **Auto Mode**: Structured workouts with intelligent TSS-targeted interval generation
+- **Manual Mode**: Real-time power control via hardware buttons for interactive training sessions
+
+### Auto Mode - Simplified Workout Generation
 - **TSS-Targeted Training**: Generates custom workouts to hit specific Training Stress Score targets
 - **Three-Phase Structure**:
   - Warmup: 30% to 100% FTP over 10 minutes
@@ -21,7 +25,16 @@ An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, feat
 - **Smart Zone Distribution**: Prevents physiologically impossible interval sequences
 - **Realistic Power Variation**: ±2% power fluctuation simulates natural pedaling
 
-### Real-Time Visualization
+### Manual Mode - Interactive Power Control
+- **Hardware Button Control**: Dedicated buttons for real-time power adjustment
+  - D13: Decrease power (with customizable step size)
+  - D15: Increase power (with customizable step size)
+- **Debounce Protection**: Professional button handling prevents accidental multiple triggers
+- **Smooth Power Transitions**: No artificial fluctuations - clean, stable power output
+- **Configurable Parameters**: Adjustable base power, step size, and duration
+- **Physiological HR Response**: Heart rate automatically adjusts to power changes
+
+### Real-Time Visualization (Auto Mode)
 - **ASCII Workout Profile**: 120-character wide visualization showing power zones over time
 - **Live Progress Tracking**: Current position marker with segment information
 - **Power Zone Display**: Visual representation of training zones (Recovery to VO2 Max)
@@ -29,14 +42,33 @@ An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, feat
 
 ## Configuration Parameters
 
-### Core Training Parameters (Simplified)
+### Mode Selection
+```cpp
+const String TRAINING_MODE = "auto";          // "auto" or "manual" mode selection
+```
+
+### Core Training Parameters (Both Modes)
 ```cpp
 const uint16_t FTP = 250;                     // Functional Threshold Power in watts
 const uint8_t HR_BASE = 135;                  // Base heart rate at 50% FTP
 const uint8_t HR_MAX = 170;                   // Max heart rate at 127% FTP
+```
+
+### Auto Mode Parameters
+```cpp
 const uint16_t CUSTOM_DURATION_MINUTES = 240; // Main interval duration in minutes
 const float CUSTOM_TARGET_TSS = 350.0;        // Target Training Stress Score
 const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segments
+```
+
+### Manual Mode Parameters
+```cpp
+const uint16_t MANUAL_BASE_POWER = 200;       // Starting power in watts
+const uint16_t MANUAL_POWER_STEP = 10;        // Power adjustment step in watts
+const uint16_t MANUAL_DURATION_MINUTES = 60;  // Session duration in minutes
+const uint8_t BUTTON_POWER_DOWN = 13;         // GPIO pin for power decrease
+const uint8_t BUTTON_POWER_UP = 15;           // GPIO pin for power increase
+const uint16_t BUTTON_DEBOUNCE_MS = 200;      // Button debounce delay
 ```
 
 ## Parameter Effects
@@ -46,7 +78,7 @@ const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segmen
 - **Heart rate scaling**: Determines HR response curve (50% FTP = HR_BASE, 127% FTP = HR_MAX)
 - **Recommended range**: 150-400W depending on fitness level
 
-### Target TSS
+### Auto Mode - Target TSS
 - **Workout intensity**: Higher TSS = more time at higher intensities
 - **Duration relationship**: TSS/hour typically ranges from 60 (easy) to 150+ (very hard)
 - **Examples**:
@@ -54,10 +86,11 @@ const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segmen
   - TSS 350/4h = hard training (IF ~0.76)
   - TSS 500/4h = very hard/racing (IF ~0.91)
 
-### Interval Segments
-- **Fixed quantity**: Exactly MAX_CUSTOM_SEGMENTS intervals generated
-- **Equal duration**: Main interval time divided evenly among segments
-- **Smooth transitions**: Each segment connects seamlessly to the next
+### Manual Mode - Power Control
+- **Real-time adjustment**: Instant power changes via button presses
+- **Safety limits**: Built-in minimum (50W) and maximum (500W) power constraints
+- **Step size control**: Configurable power increments for fine or coarse adjustments
+- **Press-release activation**: Prevents accidental multiple triggers during single button press
 
 ## Installation
 
@@ -73,17 +106,41 @@ const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segmen
    - ESP32 BLE Arduino (usually included with ESP32 board package)
    - No additional libraries needed
 
-3. **Upload Process**:
+3. **Hardware Setup (Manual Mode Only)**:
+   - Connect momentary push buttons between D13/D15 and GND
+   - Internal pull-up resistors are automatically enabled
+   - No external resistors required
+
+4. **Upload Process**:
    - Connect ESP32 via USB
    - Select board type and port in Arduino IDE
+   - Configure TRAINING_MODE parameter
    - Compile and upload the sketch
 
 ## Usage
 
+### Mode Selection
+Choose operation mode by modifying the TRAINING_MODE parameter:
+- `const String TRAINING_MODE = "auto";` - Structured workout mode
+- `const String TRAINING_MODE = "manual";` - Interactive power control mode
+
 ### Initial Setup
 1. Power on ESP32 and open Serial Monitor (115200 baud)
-2. Device will generate custom workout and display configuration
+2. Device will display mode configuration and initialize accordingly
 3. Look for "BLE emulator ready for Zwift connection!"
+
+### Auto Mode Usage
+1. Device generates custom workout based on configured parameters
+2. Workout visualization displays in Serial Monitor
+3. Training follows structured three-phase progression automatically
+
+### Manual Mode Usage
+1. Device starts at configured base power
+2. Use hardware buttons for real-time power control:
+   - **D13 Button**: Decrease power by configured step amount
+   - **D15 Button**: Increase power by configured step amount
+3. Power changes are logged to Serial Monitor
+4. Heart rate adjusts automatically to power changes
 
 ### Zwift Pairing
 1. Open Zwift and navigate to pairing screen
@@ -94,20 +151,33 @@ const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segmen
 3. Pair all three services and start riding
 
 ### Workout Monitoring
-- **Serial Output**: Real-time power, HR, cadence, and segment information
-- **Workout Visualization**: ASCII graph updates every minute showing full workout profile
+- **Serial Output**: Real-time power, HR, cadence, and mode-specific information
+- **Auto Mode**: ASCII graph updates every minute showing full workout profile
+- **Manual Mode**: Power target and adjustment confirmations
 - **Progress Tracking**: Current position, remaining time, and zone information
 
 ### Workout Lifecycle
-- **Automatic Start**: Workout begins immediately upon ESP32 boot/reset
-- **Completion Behavior**: After workout ends:
+- **Automatic Start**: Training begins immediately upon ESP32 boot/reset
+- **Completion Behavior**: After session ends:
   - Power and cadence drop to 0 (simulates stopping pedaling)
   - Heart rate gradually decreases to 90 BPM over 5 minutes (realistic recovery)
   - System maintains final state indefinitely
-- **New Workout**: To start fresh workout, physically reset ESP32 (reset button or power cycle)
-- **No Remote Restart**: No built-in mechanism to restart workout without hardware reset
+- **New Session**: To start fresh, physically reset ESP32 (reset button or power cycle)
+- **No Remote Restart**: No built-in mechanism to restart without hardware reset
 
-## Workout Structure
+## Mode Comparison
+
+| Feature | Auto Mode | Manual Mode |
+|---------|-----------|-------------|
+| **Power Control** | Pre-programmed intervals | Real-time button control |
+| **Workout Structure** | Warmup → Intervals → Cooldown | Continuous session |
+| **Power Variation** | ±2% realistic fluctuation | Stable target power |
+| **Visualization** | Full ASCII workout graph | Simple power/target display |
+| **Heart Rate** | Follows workout progression | Responds to manual power |
+| **Hardware Required** | ESP32 only | ESP32 + 2 push buttons |
+| **Best For** | Structured training plans | Interactive sessions, testing |
+
+## Workout Structure (Auto Mode)
 
 ### Simplified Three-Phase Design
 
@@ -134,7 +204,7 @@ const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segmen
 - Gradual power reduction
 - Ends with easy recovery spinning
 
-## Power Visualization Legend
+## Power Visualization Legend (Auto Mode)
 
 The ASCII workout visualization uses these symbols:
 - `#` = VeryHigh (140%+ FTP) - very high intensity
@@ -150,25 +220,42 @@ Workout phases:
 
 ## Customization Examples
 
-### Endurance Ride (TSS 180, 3 hours)
+### Auto Mode Examples
+
+#### Endurance Ride (TSS 180, 3 hours)
 ```cpp
+const String TRAINING_MODE = "auto";
 const uint16_t CUSTOM_DURATION_MINUTES = 180;
 const float CUSTOM_TARGET_TSS = 180.0;
 // Results in mostly Zone 2-3 riding with occasional tempo efforts
 ```
 
-### VO2 Max Session (TSS 120, 1.5 hours)
+#### VO2 Max Session (TSS 120, 1.5 hours)
 ```cpp
+const String TRAINING_MODE = "auto";
 const uint16_t CUSTOM_DURATION_MINUTES = 90;
 const float CUSTOM_TARGET_TSS = 120.0;
 // Creates high-intensity interval structure
 ```
 
-### Race Simulation (TSS 280, 2 hours)
+### Manual Mode Examples
+
+#### Power Testing Session
 ```cpp
-const uint16_t CUSTOM_DURATION_MINUTES = 120;
-const float CUSTOM_TARGET_TSS = 280.0;
-// Generates race-like variable power with high average
+const String TRAINING_MODE = "manual";
+const uint16_t MANUAL_BASE_POWER = 150;
+const uint16_t MANUAL_POWER_STEP = 25;
+const uint16_t MANUAL_DURATION_MINUTES = 45;
+// Start low, increase by 25W steps for testing
+```
+
+#### Fine Power Control
+```cpp
+const String TRAINING_MODE = "manual";
+const uint16_t MANUAL_BASE_POWER = 250;
+const uint16_t MANUAL_POWER_STEP = 5;
+const uint16_t MANUAL_DURATION_MINUTES = 90;
+// Precise 5W adjustments around FTP
 ```
 
 ## Troubleshooting
@@ -178,13 +265,54 @@ const float CUSTOM_TARGET_TSS = 280.0;
 - **Pairing fails**: Restart Bluetooth on Zwift device, ensure close proximity
 - **Disconnections**: Check power supply stability, avoid interference sources
 
-### Workout Issues
+### Auto Mode Issues
 - **Unrealistic TSS**: Check if target TSS matches duration (TSS/hour should be 50-150)
 - **Too easy/hard**: Adjust FTP setting to match your actual threshold power
 
+### Manual Mode Issues
+- **Buttons not responding**: Verify GPIO connections (D13, D15 to GND via momentary switches)
+- **Multiple triggers**: Check debounce setting, ensure clean button contacts
+- **Power limits**: Default range is 50-500W, modify source code if different limits needed
+
 ## Version History
 
-### v0.2.35 (Current)
+### v0.2.45 (Current)
+**Dual Mode Operation: Auto + Manual Control**
+
+#### Major New Features:
+- **Manual Mode Implementation**: Complete interactive power control system
+  - Hardware button integration (D13/D15 for power decrease/increase)
+  - Professional debounce handling with press-release activation
+  - Configurable power step size and base power settings
+  - Real-time power adjustment with immediate feedback
+
+- **Mode Selection System**: Easy switching between auto and manual modes via single parameter
+  - Automatic hardware initialization based on selected mode
+  - Mode-specific visualization and output formatting
+  - Independent parameter sets for each operation mode
+
+#### Manual Mode Features:
+- **Stable Power Output**: No artificial ±2% fluctuations for clean, consistent power delivery
+- **Safety Constraints**: Built-in minimum (50W) and maximum (500W) power limits
+- **Intelligent Button Handling**:
+  - 200ms debounce protection prevents accidental multiple triggers
+  - Press-release activation ensures single action per button press
+  - Continuous monitoring in main loop for responsive control
+- **Physiological Integration**: Heart rate automatically adjusts to manual power changes using same algorithm as auto mode
+
+#### Technical Improvements:
+- **Minimal Code Changes**: Added manual functionality without disrupting existing auto mode operation
+- **Shared Core Functions**: Both modes use identical BLE services, cadence simulation, and heart rate calculation
+- **Efficient Resource Usage**: Manual mode variables only active when needed
+- **Preserved Visualization**: Auto mode retains all existing ASCII workout graphs and progress tracking
+
+#### Enhanced User Experience:
+- **Mode-Specific Configuration Display**: Clear indication of active mode and relevant parameters
+- **Simplified Manual Setup**: Single-segment workout structure eliminates complex interval logic
+- **Real-Time Feedback**: Immediate Serial Monitor confirmation of power adjustments
+- **Consistent Cadence/HR**: Both modes maintain identical cadence cycling (90-98 RPM) and physiological HR response
+
+### v0.2.35 (Previous)
 **Simplified and Enhanced Workout Generation**
 
 #### Major Simplifications:
