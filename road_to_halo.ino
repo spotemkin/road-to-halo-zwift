@@ -34,10 +34,23 @@ const uint16_t MANUAL_BASE_POWER = 200;       // Base power for manual mode in w
 const uint16_t MANUAL_POWER_STEP = 10;        // Power increment/decrement step in watts
 const uint16_t MANUAL_DURATION_MINUTES = 60;  // Default duration for manual mode
 
-// Button pins for manual mode
+// Manual control method: "buttons" or "joystick"
+const String MANUAL_CONTROL_TYPE = "joystick"; // Control method selection
+
+// Button pins for manual mode (used when MANUAL_CONTROL_TYPE = "buttons")
 const uint8_t BUTTON_POWER_DOWN = 13;         // D13 - decrease power button
 const uint8_t BUTTON_POWER_UP = 15;           // D15 - increase power button
 const uint16_t BUTTON_DEBOUNCE_MS = 200;      // Button debounce delay in milliseconds
+
+// Joystick parameters (used when MANUAL_CONTROL_TYPE = "joystick")
+const uint8_t JOYSTICK_PIN = 32;              // GPIO pin for joystick X-axis
+const uint8_t JOYSTICK_VCC_PIN = 19;          // GPIO pin for joystick VCC (power)
+const uint8_t JOYSTICK_GND_PIN = 18;          // GPIO pin for joystick GND
+const uint16_t JOYSTICK_MAX_ADC = 4095;       // ESP32 ADC is 12-bit
+const uint16_t JOYSTICK_DEADZONE = 200;       // Deadzone around center (avoid glitches at zero)
+const uint16_t JOYSTICK_THRESHOLD_LOW = 1500;  // Lower threshold for power decrease
+const uint16_t JOYSTICK_THRESHOLD_HIGH = 2500; // Upper threshold for power increase
+const uint16_t JOYSTICK_UPDATE_MS = 50;       // Joystick update interval in milliseconds
 // ============================ END CONFIGURABLE PARAMETERS ============================
 
 // Workout segment structure
@@ -81,6 +94,12 @@ uint32_t lastButtonPressDown = 0;                // Last time power down button 
 uint32_t lastButtonPressUp = 0;                  // Last time power up button was pressed
 bool buttonDownLastState = HIGH;                 // Previous state of power down button
 bool buttonUpLastState = HIGH;                   // Previous state of power up button
+
+// Joystick variables
+uint32_t lastJoystickUpdate = 0;                 // Last time joystick was read
+uint16_t joystickCenterValue = 0;                // Calibrated center position of joystick
+bool joystickLeftPressed = false;                // Track if joystick is currently pressed left
+bool joystickRightPressed = false;               // Track if joystick is currently pressed right
 
 // CSC variables
 uint16_t crankRevolutions = 0;   // Total number of crank revolutions
@@ -139,6 +158,12 @@ void printConfiguration() {
         Serial.print("Duration: "); Serial.print(MANUAL_DURATION_MINUTES); Serial.println(" min");
         Serial.print("Base Power: "); Serial.print(MANUAL_BASE_POWER); Serial.println(" W");
         Serial.print("Power Step: "); Serial.print(MANUAL_POWER_STEP); Serial.println(" W");
+        Serial.print("Control Type: "); Serial.println(MANUAL_CONTROL_TYPE);
+        if (MANUAL_CONTROL_TYPE == "joystick") {
+            Serial.print("Joystick Pin: GPIO"); Serial.println(JOYSTICK_PIN);
+            Serial.print("Joystick Power: GPIO"); Serial.print(JOYSTICK_VCC_PIN); Serial.print(" (VCC), GPIO"); Serial.print(JOYSTICK_GND_PIN); Serial.println(" (GND)");
+            Serial.print("Thresholds: "); Serial.print(JOYSTICK_THRESHOLD_LOW); Serial.print("-"); Serial.println(JOYSTICK_THRESHOLD_HIGH);
+        }
     } else {
         Serial.print("Target Duration: "); Serial.print(CUSTOM_DURATION_MINUTES); Serial.println(" min");
         Serial.print("Target TSS: "); Serial.println(CUSTOM_TARGET_TSS);
@@ -470,9 +495,52 @@ void generateWorkout() {
     Serial.println();
 }
 
+// Handle joystick input for manual mode power control
+void handleManualJoystick() {
+    if (TRAINING_MODE != "manual" || MANUAL_CONTROL_TYPE != "joystick") return;
+
+    uint32_t currentTime = millis();
+    if (currentTime - lastJoystickUpdate < JOYSTICK_UPDATE_MS) return;
+
+    lastJoystickUpdate = currentTime;
+
+    // Read joystick value
+    uint16_t joystickValue = analogRead(JOYSTICK_PIN);
+
+    // Determine current joystick state
+    bool currentLeftPressed = (joystickValue < JOYSTICK_THRESHOLD_LOW);
+    bool currentRightPressed = (joystickValue > JOYSTICK_THRESHOLD_HIGH);
+
+    // Check for LEFT press-release cycle (decrease power)
+    if (joystickLeftPressed && !currentLeftPressed) {
+        // Joystick was pressed left and now released - trigger power decrease
+        if (manualTargetPower > 50) { // Minimum power limit
+            manualTargetPower = max(50, (int)manualTargetPower - (int)MANUAL_POWER_STEP);
+            Serial.print("Joystick LEFT released - Power decreased to: ");
+            Serial.print(manualTargetPower);
+            Serial.println("W");
+        }
+    }
+
+    // Check for RIGHT press-release cycle (increase power)
+    if (joystickRightPressed && !currentRightPressed) {
+        // Joystick was pressed right and now released - trigger power increase
+        if (manualTargetPower < 500) { // Maximum power limit
+            manualTargetPower = min(500, (int)manualTargetPower + (int)MANUAL_POWER_STEP);
+            Serial.print("Joystick RIGHT released - Power increased to: ");
+            Serial.print(manualTargetPower);
+            Serial.println("W");
+        }
+    }
+
+    // Update joystick state for next cycle
+    joystickLeftPressed = currentLeftPressed;
+    joystickRightPressed = currentRightPressed;
+}
+
 // Handle button input for manual mode power control
 void handleManualButtons() {
-    if (TRAINING_MODE != "manual") return;
+    if (TRAINING_MODE != "manual" || MANUAL_CONTROL_TYPE != "buttons") return;
 
     uint32_t currentTime = millis();
     bool buttonDownState = digitalRead(BUTTON_POWER_DOWN);
@@ -535,8 +603,26 @@ void setup()
 
     // Initialize button pins for manual mode
     if (TRAINING_MODE == "manual") {
-        pinMode(BUTTON_POWER_DOWN, INPUT_PULLUP);
-        pinMode(BUTTON_POWER_UP, INPUT_PULLUP);
+        if (MANUAL_CONTROL_TYPE == "buttons") {
+            pinMode(BUTTON_POWER_DOWN, INPUT_PULLUP);
+            pinMode(BUTTON_POWER_UP, INPUT_PULLUP);
+            Serial.println("Manual mode: buttons initialized");
+        } else if (MANUAL_CONTROL_TYPE == "joystick") {
+            // Initialize joystick power pins
+            pinMode(JOYSTICK_VCC_PIN, OUTPUT);
+            pinMode(JOYSTICK_GND_PIN, OUTPUT);
+            pinMode(JOYSTICK_PIN, INPUT);
+
+            // Set up virtual power supply for joystick
+            digitalWrite(JOYSTICK_VCC_PIN, HIGH); // GPIO19 = +5V for joystick
+            digitalWrite(JOYSTICK_GND_PIN, LOW);  // GPIO18 = GND for joystick
+
+            // Calibrate joystick center position
+            delay(100); // Small delay for ADC stabilization
+            joystickCenterValue = analogRead(JOYSTICK_PIN);
+            Serial.print("Manual mode: joystick initialized, center = ");
+            Serial.println(joystickCenterValue);
+        }
     }
 
     // Generate workout
@@ -608,6 +694,7 @@ void loop()
 {
     // Handle manual mode buttons
     handleManualButtons();
+    handleManualJoystick();
 
     // Update values every second
     if (millis() - lastUpdate > 1000)
@@ -805,9 +892,14 @@ void sendNotifications()
     Serial.print(" RPM");
 
     if (TRAINING_MODE == "manual") {
-        Serial.print(" | Target: ");
-        Serial.print(manualTargetPower);
-        Serial.print("W [MANUAL]");
+      Serial.print(" | Target: ");
+      Serial.print(manualTargetPower);
+      Serial.print("W [");
+      String controlTypeDisplay = MANUAL_CONTROL_TYPE;
+      controlTypeDisplay.toUpperCase();
+
+      Serial.print(controlTypeDisplay);
+      Serial.print("]");
     } else {
         Serial.print(" | Seg ");
         Serial.print(currentSegment + 1);

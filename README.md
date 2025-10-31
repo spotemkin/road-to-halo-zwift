@@ -1,4 +1,4 @@
-# ESP32 BLE Cycling Emulator for Zwift v0.2.45
+# ESP32 BLE Cycling Emulator for Zwift v0.2.46
 
 An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, featuring intelligent workout generation with physiological constraints, real-time visualization, and dual operation modes for both structured training and manual power control.
 
@@ -26,10 +26,10 @@ An advanced Bluetooth Low Energy (BLE) emulator for Zwift running on ESP32, feat
 - **Realistic Power Variation**: ±2% power fluctuation simulates natural pedaling
 
 ### Manual Mode - Interactive Power Control
-- **Hardware Button Control**: Dedicated buttons for real-time power adjustment
-  - D13: Decrease power (with customizable step size)
-  - D15: Increase power (with customizable step size)
-- **Debounce Protection**: Professional button handling prevents accidental multiple triggers
+- **Dual Control Options**: Choose between hardware buttons or analog joystick for power adjustment
+  - **Button Control**: D13/D15 for discrete power steps
+  - **Joystick Control**: Analog stick with press-release action for power changes
+- **Debounce Protection**: Professional input handling prevents accidental multiple triggers
 - **Smooth Power Transitions**: No artificial fluctuations - clean, stable power output
 - **Configurable Parameters**: Adjustable base power, step size, and duration
 - **Physiological HR Response**: Heart rate automatically adjusts to power changes
@@ -66,9 +66,21 @@ const uint8_t MAX_CUSTOM_SEGMENTS = 30;       // Exact number of interval segmen
 const uint16_t MANUAL_BASE_POWER = 200;       // Starting power in watts
 const uint16_t MANUAL_POWER_STEP = 10;        // Power adjustment step in watts
 const uint16_t MANUAL_DURATION_MINUTES = 60;  // Session duration in minutes
+
+// Control type selection: "buttons" or "joystick"
+const String MANUAL_CONTROL_TYPE = "joystick"; // Control method selection
+
+// Button parameters (used when MANUAL_CONTROL_TYPE = "buttons")
 const uint8_t BUTTON_POWER_DOWN = 13;         // GPIO pin for power decrease
 const uint8_t BUTTON_POWER_UP = 15;           // GPIO pin for power increase
 const uint16_t BUTTON_DEBOUNCE_MS = 200;      // Button debounce delay
+
+// Joystick parameters (used when MANUAL_CONTROL_TYPE = "joystick")
+const uint8_t JOYSTICK_PIN = 32;              // GPIO pin for joystick X-axis
+const uint8_t JOYSTICK_VCC_PIN = 19;          // GPIO pin for joystick power
+const uint8_t JOYSTICK_GND_PIN = 18;          // GPIO pin for joystick ground
+const uint16_t JOYSTICK_THRESHOLD_LOW = 1500; // Lower threshold for power decrease
+const uint16_t JOYSTICK_THRESHOLD_HIGH = 2500; // Upper threshold for power increase
 ```
 
 ## Parameter Effects
@@ -87,10 +99,13 @@ const uint16_t BUTTON_DEBOUNCE_MS = 200;      // Button debounce delay
   - TSS 500/4h = very hard/racing (IF ~0.91)
 
 ### Manual Mode - Power Control
-- **Real-time adjustment**: Instant power changes via button presses
+- **Real-time adjustment**: Instant power changes via button presses or joystick movement
+- **Control Methods**:
+  - **Buttons**: Press-release action for discrete power steps
+  - **Joystick**: Deflect left/right and release for power decrease/increase
 - **Safety limits**: Built-in minimum (50W) and maximum (500W) power constraints
 - **Step size control**: Configurable power increments for fine or coarse adjustments
-- **Press-release activation**: Prevents accidental multiple triggers during single button press
+- **Press-release activation**: Prevents accidental multiple triggers during single input action
 
 ## Installation
 
@@ -107,9 +122,19 @@ const uint16_t BUTTON_DEBOUNCE_MS = 200;      // Button debounce delay
    - No additional libraries needed
 
 3. **Hardware Setup (Manual Mode Only)**:
+
+   **Option A - Button Control:**
    - Connect momentary push buttons between D13/D15 and GND
    - Internal pull-up resistors are automatically enabled
    - No external resistors required
+
+   **Option B - Joystick Control:**
+   - Connect analog joystick to ESP32:
+     - VCC → GPIO19 (ESP32 provides power)
+     - GND → GPIO18 (ESP32 provides ground)
+     - VRx (X-axis) → GPIO32 (analog input)
+   - No external components required
+   - Joystick automatically calibrates center position on startup
 
 4. **Upload Process**:
    - Connect ESP32 via USB
@@ -136,9 +161,17 @@ Choose operation mode by modifying the TRAINING_MODE parameter:
 
 ### Manual Mode Usage
 1. Device starts at configured base power
-2. Use hardware buttons for real-time power control:
+2. Use hardware controls for real-time power adjustment:
+
+   **Button Control:**
    - **D13 Button**: Decrease power by configured step amount
    - **D15 Button**: Increase power by configured step amount
+
+   **Joystick Control:**
+   - **Deflect Left & Release**: Decrease power by configured step amount
+   - **Deflect Right & Release**: Increase power by configured step amount
+   - Center position = no action (with built-in deadzone)
+
 3. Power changes are logged to Serial Monitor
 4. Heart rate adjusts automatically to power changes
 
@@ -169,12 +202,13 @@ Choose operation mode by modifying the TRAINING_MODE parameter:
 
 | Feature | Auto Mode | Manual Mode |
 |---------|-----------|-------------|
-| **Power Control** | Pre-programmed intervals | Real-time button control |
+| **Power Control** | Pre-programmed intervals | Real-time button/joystick control |
+| **Control Options** | N/A | Buttons or analog joystick |
 | **Workout Structure** | Warmup → Intervals → Cooldown | Continuous session |
 | **Power Variation** | ±2% realistic fluctuation | Stable target power |
 | **Visualization** | Full ASCII workout graph | Simple power/target display |
 | **Heart Rate** | Follows workout progression | Responds to manual power |
-| **Hardware Required** | ESP32 only | ESP32 + 2 push buttons |
+| **Hardware Required** | ESP32 only | ESP32 + buttons OR joystick |
 | **Best For** | Structured training plans | Interactive sessions, testing |
 
 ## Workout Structure (Auto Mode)
@@ -272,11 +306,50 @@ const uint16_t MANUAL_DURATION_MINUTES = 90;
 ### Manual Mode Issues
 - **Buttons not responding**: Verify GPIO connections (D13, D15 to GND via momentary switches)
 - **Multiple triggers**: Check debounce setting, ensure clean button contacts
+- **Joystick not responding**:
+  - Verify connections: VCC→GPIO19, GND→GPIO18, VRx→GPIO32
+  - Check Serial Monitor for center calibration value (should be ~2000-2100)
+  - Ensure joystick is centered during ESP32 startup
+- **Joystick too sensitive/not sensitive**: Adjust JOYSTICK_THRESHOLD_LOW/HIGH values in code
 - **Power limits**: Default range is 50-500W, modify source code if different limits needed
 
 ## Version History
 
-### v0.2.45 (Current)
+### v0.2.46 (Current)
+**Joystick Control Integration: Dual Input Methods for Manual Mode**
+
+#### Major New Features:
+- **Joystick Control Option**: Complete analog joystick support for manual power control
+  - ESP32-powered joystick connection (no external power required)
+  - Press-release action: deflect left/right and return to center for single power adjustment
+  - Automatic center position calibration on startup
+  - Built-in deadzone prevents accidental triggers near center position
+
+- **Control Type Selection**: Choose between buttons or joystick for manual mode
+  - Single parameter switch: `MANUAL_CONTROL_TYPE = "buttons"` or `"joystick"`
+  - Automatic hardware initialization based on selected control type
+  - Independent configuration parameters for each control method
+
+#### Joystick Implementation Features:
+- **Virtual Power Supply**: ESP32 provides both power (GPIO19) and ground (GPIO18) to joystick
+- **Simple 3-Wire Connection**: VCC→GPIO19, GND→GPIO18, VRx→GPIO32
+- **Press-Release Logic**: Similar to button behavior - deflect and release for single action
+- **Configurable Thresholds**: Adjustable sensitivity via JOYSTICK_THRESHOLD_LOW/HIGH parameters
+- **State Tracking**: Prevents continuous triggering, ensures single action per deflection cycle
+
+#### Enhanced User Experience:
+- **Plug-and-Play Setup**: No external components required for joystick operation
+- **Automatic Calibration**: Center position detected and stored during startup
+- **Clear Status Indication**: Serial Monitor shows control type and joystick calibration values
+- **Troubleshooting Support**: Comprehensive setup and connection guidance
+
+#### Technical Improvements:
+- **Minimal Code Impact**: Joystick functionality added without affecting existing button or auto mode operation
+- **Efficient Resource Usage**: Joystick variables only initialized when needed
+- **Responsive Input Handling**: 50ms polling rate for smooth joystick response
+- **Robust State Management**: Proper press-release detection prevents double-triggering
+
+### v0.2.45 (Previous)
 **Dual Mode Operation: Auto + Manual Control**
 
 #### Major New Features:
